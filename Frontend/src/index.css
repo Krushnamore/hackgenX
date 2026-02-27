@@ -1,0 +1,127 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 60% 98%;
+    --foreground: 215 62% 17%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 215 62% 17%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 62% 17%;
+
+    --primary: 215 62% 27%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 214 32% 91%;
+    --secondary-foreground: 215 62% 27%;
+
+    --muted: 220 30% 96%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 217 91% 53%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 72% 36%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 44%;
+    --warning-foreground: 0 0% 100%;
+
+    --sky: 199 89% 48%;
+    --sky-foreground: 0 0% 100%;
+
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 217 91% 53%;
+
+    --radius: 0.5rem;
+
+    --sidebar-background: 215 62% 27%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 217 91% 53%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 215 62% 22%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: 215 50% 35%;
+    --sidebar-ring: 217 91% 53%;
+
+    --chart-1: 217 91% 53%;
+    --chart-2: 142 72% 36%;
+    --chart-3: 38 92% 44%;
+    --chart-4: 199 89% 48%;
+    --chart-5: 0 84% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-body antialiased;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-heading;
+  }
+}
+
+@layer components {
+  .card-elevated {
+    @apply bg-card rounded-lg border border-border shadow-sm transition-all duration-200 hover:shadow-md;
+  }
+  .stat-card {
+    @apply bg-card rounded-lg border border-border p-5 shadow-sm;
+  }
+  .badge-pill {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold;
+  }
+  .badge-priority-low {
+    @apply badge-pill bg-muted text-muted-foreground;
+  }
+  .badge-priority-medium {
+    @apply badge-pill bg-warning/10 text-warning;
+  }
+  .badge-priority-high {
+    @apply badge-pill bg-destructive/10 text-destructive;
+  }
+  .badge-priority-critical {
+    @apply badge-pill bg-destructive text-destructive-foreground;
+  }
+  .badge-status-submitted {
+    @apply badge-pill bg-accent/10 text-accent;
+  }
+  .badge-status-review {
+    @apply badge-pill bg-warning/10 text-warning;
+  }
+  .badge-status-progress {
+    @apply badge-pill bg-sky/10 text-sky;
+  }
+  .badge-status-resolved {
+    @apply badge-pill bg-success/10 text-success;
+  }
+  .badge-status-rejected {
+    @apply badge-pill bg-destructive/10 text-destructive;
+  }
+  .sidebar-item {
+    @apply flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200;
+  }
+  .sidebar-item-active {
+    @apply sidebar-item bg-sidebar-accent text-sidebar-accent-foreground border-l-3 border-accent;
+  }
+  .mono-id {
+    @apply font-mono text-xs text-muted-foreground;
+  }
+}
+
+@layer utilities {
+  .border-l-3 {
+    border-left-width: 3px;
+  }
+}
