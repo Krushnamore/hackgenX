@@ -114,8 +114,10 @@ app.use((err, req, res, next) => {
 });
 
 // ── Start server with keep-alive ──────────────────────────────
-const server = app.listen(ENV.PORT, () => {
-  console.log(`🚀 JANVANI backend running on http://localhost:${ENV.PORT}`);
+const PORT = process.env.PORT || ENV.PORT || 5000;
+
+const server = app.listen(PORT, () => {
+  console.log(`🚀 JANVANI backend running on port ${PORT}`);
   console.log(`📡 Environment: ${ENV.NODE_ENV}`);
 });
 
