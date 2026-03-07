@@ -40,8 +40,8 @@ app.use(compression());
 
 // ── CORS ──────────────────────────────────────────────────────
 app.use(cors({
-  origin      : ENV.CLIENT_URL,
-  credentials : true,
+  origin: process.env.CLIENT_URL,
+  credentials: true,
 }));
 
 // ── Body parsing ──────────────────────────────────────────────
