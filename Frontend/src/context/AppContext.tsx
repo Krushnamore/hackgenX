@@ -32,6 +32,7 @@ interface AppContextType {
   updateComplaintStatus: (id: string, status: string) => Promise<void>;
   deleteComplaint: (id: string) => Promise<void>;
   resolveComplaint: (id: string, photo?: string, note?: string, officer?: string) => Promise<void>;
+  addComplaint: (data: any) => Promise<any>;
   leaderboard: any[];
   globalTop3: any[];
   refreshLeaderboard: (ward?: number, limit?: number) => Promise<void>;
@@ -78,12 +79,14 @@ const ls = {
 
 const BASE = (import.meta as any).env?.VITE_API_URL || "http://localhost:5000/api";
 
-async function apiFetch(path: string) {
+async function apiFetch(path: string, opts: RequestInit = {}) {
   const token = getToken();
   const res = await fetch(`${BASE}${path}`, {
+    ...opts,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(opts.headers || {}),
     },
   });
   if (!res.ok) {
@@ -207,6 +210,34 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setUsers([]);
   };
 
+  /* ── ADD COMPLAINT ── */
+
+  const addComplaint = useCallback(async (data: any) => {
+    // Try complaintAPI.create first, fall back to direct fetch
+    let result: any;
+    try {
+      if (typeof (complaintAPI as any).create === 'function') {
+        result = await (complaintAPI as any).create(data);
+      } else {
+        result = await apiFetch('/complaints', {
+          method: 'POST',
+          body: JSON.stringify(data),
+        });
+      }
+    } catch (err) {
+      throw err;
+    }
+    const newComplaint = result?.complaint ?? result;
+    if (newComplaint) {
+      setComplaints(prev => {
+        const updated = [newComplaint, ...prev];
+        ls.set(COMPLAINTS_KEY, updated);
+        return updated;
+      });
+    }
+    return newComplaint;
+  }, []);
+
   /* ── UPDATE STATUS ── */
 
   const updateComplaintStatus = useCallback(async (id: string, status: string) => {
@@ -258,6 +289,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       currentUser, complaints, users, loading,
       login, register, logout,
       refreshComplaints, myComplaints,
+      addComplaint,
       updateComplaintStatus, deleteComplaint, resolveComplaint,
       leaderboard, globalTop3, refreshLeaderboard,
     }}>
