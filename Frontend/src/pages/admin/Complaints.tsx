@@ -1,18 +1,11 @@
 /**
- * Admin Complaints Page  ─  src/pages/admin/Complaints.tsx
+ * Admin Complaints Page — Department-scoped for officers
  *
- * FIXES
- * ─────
- * • deleteComplaint: now shows spinner on the delete button while in-flight
- *   and displays the actual backend error message in the toast on failure.
- *
- * • updateComplaintStatus: select is disabled while the update is pending
- *   to prevent double submissions. The status reverts visually if the API
- *   fails (AppContext rolls back state on error).
- *
- * • View modal: uses c.id (normalised complaintId string), guaranteed correct.
- *
- * • All API errors surface the real error message instead of generic "failed".
+ * KEY FIXES:
+ * • currentUser.role (not adminType) is used — matches what the backend returns
+ * • superAdmin can VIEW all complaints but CANNOT edit status (read-only)
+ * • dept_officer can edit status for their department's complaints only
+ * • Only superAdmin can delete
  */
 
 import { useState, useEffect } from 'react';
@@ -24,7 +17,7 @@ import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 import {
   Download, Trash2, Eye, X, Users, Link2,
-  AlertTriangle, RefreshCw, Loader2,
+  AlertTriangle, RefreshCw, Loader2, Wrench, ShieldCheck,
 } from 'lucide-react';
 import {
   getPriorityClass, getStatusClass,
@@ -37,12 +30,29 @@ import autoTable from 'jspdf-autotable';
 
 const ZONES = [1, 2, 3, 4, 5] as const;
 
+const DEPT_TO_CATEGORY: Record<string, string> = {
+  'Roads & Infrastructure': 'Road',
+  'Water Supply'          : 'Water',
+  'Sanitation'            : 'Sanitation',
+  'Electricity'           : 'Electricity',
+  'Planning'              : 'Other',
+  'General Administration': '',
+};
+
 export default function AdminComplaints() {
-  const { complaints, updateComplaintStatus, deleteComplaint, refreshComplaints } = useApp();
+  const { complaints, updateComplaintStatus, deleteComplaint, refreshComplaints, currentUser } = useApp();
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [catFilter,    setCatFilter]    = useState('');
+  // ── Role detection — uses backend `role` field ──────────────────────────────
+  const isSuperAdmin = currentUser?.role === 'superAdmin';
+  const isOfficer    = currentUser?.role === 'dept_officer' || currentUser?.role === 'admin';
+  const officerCat   = isOfficer ? (DEPT_TO_CATEGORY[currentUser?.department || ''] || '') : '';
+
+  // superAdmin sees all but cannot change status — only dept_officer can
+  const canEditStatus = isOfficer;
+
+  const [catFilter,    setCatFilter]    = useState(officerCat);
   const [priFilter,    setPriFilter]    = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [wardFilter,   setWardFilter]   = useState(0);
@@ -51,12 +61,9 @@ export default function AdminComplaints() {
 
   const [viewId,          setViewId]          = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [deletingId,      setDeletingId]      = useState<string | null>(null);
+  const [updatingId,      setUpdatingId]      = useState<string | null>(null);
 
-  // Track in-flight operations
-  const [deletingId,  setDeletingId]  = useState<string | null>(null);
-  const [updatingId,  setUpdatingId]  = useState<string | null>(null);
-
-  // ── Read URL params on first mount ────────────────────────
   useEffect(() => {
     const zone = searchParams.get('zone') ?? searchParams.get('ward');
     const id   = searchParams.get('id');
@@ -65,31 +72,26 @@ export default function AdminComplaints() {
     if (zone || id) setSearchParams({}, { replace: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Filtering ─────────────────────────────────────────────
   const filtered = complaints.filter(c => {
-    if (catFilter    && c.category !== catFilter)       return false;
-    if (priFilter    && c.priority !== priFilter)       return false;
-    if (statusFilter && c.status   !== statusFilter)    return false;
-    if (wardFilter   && Number(c.ward) !== wardFilter)  return false;
+    if (isOfficer && officerCat && c.category !== officerCat) return false;
+    if (catFilter    && c.category !== catFilter)      return false;
+    if (priFilter    && c.priority !== priFilter)      return false;
+    if (statusFilter && c.status   !== statusFilter)   return false;
+    if (wardFilter   && Number(c.ward) !== wardFilter) return false;
     if (search) {
       const q = search.toLowerCase();
-      const inId    = (c.id    || '').toLowerCase().includes(q);
-      const inTitle = (c.title || '').toLowerCase().includes(q);
-      if (!inId && !inTitle) return false;
+      if (!(c.id || '').toLowerCase().includes(q) && !(c.title || '').toLowerCase().includes(q)) return false;
     }
     return true;
   });
 
-  const viewComp = viewId
-    ? complaints.find(c => c.id === viewId) ?? null
-    : null;
+  const viewComp = viewId ? complaints.find(c => c.id === viewId) ?? null : null;
 
   const clearFilters = () => {
-    setCatFilter(''); setPriFilter(''); setStatusFilter('');
-    setWardFilter(0); setSearch('');
+    setPriFilter(''); setStatusFilter(''); setWardFilter(0); setSearch('');
+    if (!isOfficer) setCatFilter('');
   };
 
-  // ── Refresh ───────────────────────────────────────────────
   const handleRefresh = async () => {
     setRefreshing(true);
     await refreshComplaints();
@@ -97,71 +99,67 @@ export default function AdminComplaints() {
     toast({ title: '🔄 Complaints refreshed' });
   };
 
-  // ── Status change ─────────────────────────────────────────
   const handleStatusChange = async (id: string, newStatus: string) => {
-    if (updatingId) return; // prevent concurrent updates
+    if (!canEditStatus) {
+      toast({
+        title: '🚫 View only',
+        description: 'Super Admin can monitor complaints but cannot change status. Department Officers manage status updates.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (updatingId) return;
     setUpdatingId(id);
     try {
       await updateComplaintStatus(id, newStatus);
       toast({ title: `✅ Status updated → ${newStatus}` });
     } catch (err: any) {
       const msg = err?.message || 'Update failed';
-      toast({
-        title: '❌ Status update failed',
-        description: msg.length > 100 ? msg.slice(0, 100) + '…' : msg,
-        variant: 'destructive',
-      });
+      toast({ title: '❌ Status update failed', description: msg.slice(0, 100), variant: 'destructive' });
     } finally {
       setUpdatingId(null);
     }
   };
 
-  // ── Delete ─────────────────────────────────────────────────
   const handleDelete = async (id: string) => {
+    if (!isSuperAdmin) {
+      toast({ title: '🚫 Permission denied', description: 'Only Super Admin can delete complaints.', variant: 'destructive' });
+      return;
+    }
     setDeletingId(id);
     try {
       await deleteComplaint(id);
       setDeleteConfirmId(null);
       if (viewId === id) setViewId(null);
-      toast({
-        title: '🗑️ Complaint deleted',
-        description: id,
-        variant: 'destructive',
-      });
+      toast({ title: '🗑️ Complaint deleted', description: id, variant: 'destructive' });
     } catch (err: any) {
-      const msg = err?.message || 'Delete failed';
-      toast({
-        title: '❌ Delete failed',
-        description: msg.length > 100 ? msg.slice(0, 100) + '…' : msg,
-        variant: 'destructive',
-      });
+      toast({ title: '❌ Delete failed', description: (err?.message || '').slice(0, 100), variant: 'destructive' });
     } finally {
       setDeletingId(null);
     }
   };
 
-  // ── Excel export ──────────────────────────────────────────
   const exportExcel = () => {
     const rows = filtered.map(c => ({
-      'Complaint ID'  : c.id,
-      'Title'         : c.title,
-      'Description'   : c.description,
-      'Category'      : c.category,
-      'Priority'      : c.priority,
-      'Status'        : c.status,
-      'Zone'          : `Zone ${c.ward}`,
-      'Location'      : c.location || '',
-      'Citizen'       : c.citizenName,
-      'Phone'         : c.citizenPhone,
-      'Email'         : c.citizenEmail || '',
-      'Submitted'     : c.createdAt,
-      'Updated'       : c.updatedAt,
-      'Officer'       : c.assignedOfficer || '',
-      'Admin Note'    : c.adminNote || '',
-      'Rating'        : c.feedback?.rating || '',
-      'Feedback'      : c.feedback?.comment || '',
-      'SOS'           : c.isSOS ? 'Yes' : 'No',
-      'Support Count' : c.supportCount || 0,
+      'Complaint ID' : c.id,
+      'Title'        : c.title,
+      'Description'  : c.description,
+      'Category'     : c.category,
+      'Priority'     : c.priority,
+      'Status'       : c.status,
+      'Zone'         : `Zone ${c.ward}`,
+      'Location'     : c.location || '',
+      'Citizen'      : c.citizenName,
+      'Phone'        : c.citizenPhone,
+      'Email'        : c.citizenEmail || '',
+      'Submitted'    : c.createdAt,
+      'Updated'      : c.updatedAt,
+      'Officer'      : c.assignedOfficer || '',
+      'Admin Note'   : c.adminNote || '',
+      'Rating'       : c.feedback?.rating || '',
+      'Feedback'     : c.feedback?.comment || '',
+      'SOS'          : c.isSOS ? 'Yes' : 'No',
+      'Support Count': c.supportCount || 0,
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
@@ -170,7 +168,6 @@ export default function AdminComplaints() {
     toast({ title: '📥 Excel exported', description: `${filtered.length} rows` });
   };
 
-  // ── PDF export ────────────────────────────────────────────
   const exportPDF = () => {
     const doc = new jsPDF({ orientation: 'landscape' });
     doc.setFillColor(29, 78, 216);
@@ -182,20 +179,14 @@ export default function AdminComplaints() {
     doc.text(`Generated: ${new Date().toLocaleString()}`, 200, 14);
     doc.setTextColor(80, 80, 80);
     doc.setFontSize(9);
-    doc.text(`Total: ${filtered.length} complaints${wardFilter ? `  |  Zone ${wardFilter}` : ''}`, 14, 26);
+    const scopeLabel = isOfficer ? `  |  Dept: ${currentUser?.department}` : '';
+    doc.text(`Total: ${filtered.length} complaints${wardFilter ? `  |  Zone ${wardFilter}` : ''}${scopeLabel}`, 14, 26);
     autoTable(doc, {
       startY: 30,
       head: [['ID', 'Title', 'Category', 'Priority', 'Status', 'Zone', 'Citizen', 'Date', 'Officer']],
       body: filtered.map(c => [
-        c.id,
-        (c.title || '').slice(0, 38),
-        c.category,
-        c.priority,
-        c.status,
-        `Zone ${c.ward}`,
-        c.citizenName,
-        c.createdAt,
-        c.assignedOfficer || '—',
+        c.id, (c.title || '').slice(0, 38), c.category, c.priority,
+        c.status, `Zone ${c.ward}`, c.citizenName, c.createdAt, c.assignedOfficer || '—',
       ]),
       styles: { fontSize: 7.5, cellPadding: 2 },
       headStyles: { fillColor: [29, 78, 216], textColor: 255 },
@@ -205,7 +196,7 @@ export default function AdminComplaints() {
     toast({ title: '📥 PDF exported', description: `${filtered.length} complaints` });
   };
 
-  const hasFilters = catFilter || priFilter || statusFilter || wardFilter || search;
+  const hasFilters = (isSuperAdmin && catFilter) || priFilter || statusFilter || wardFilter || search;
 
   return (
     <AdminLayout>
@@ -214,21 +205,34 @@ export default function AdminComplaints() {
         {/* Header */}
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
-            <h1 className="text-2xl font-heading font-bold">Complaints Management</h1>
+            <h1 className="text-2xl font-heading font-bold flex items-center gap-2">
+              Complaints Management
+              {isSuperAdmin && (
+                <span className="inline-flex items-center gap-1 text-xs font-semibold bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300 px-2 py-0.5 rounded-full">
+                  <ShieldCheck className="h-3 w-3" /> All Depts · View Only
+                </span>
+              )}
+              {isOfficer && (
+                <span className="inline-flex items-center gap-1 text-xs font-semibold bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300 px-2 py-0.5 rounded-full">
+                  <Wrench className="h-3 w-3" /> {currentUser?.department}
+                </span>
+              )}
+            </h1>
+            {isSuperAdmin && (
+              <p className="text-xs text-yellow-600 dark:text-yellow-400 mt-0.5">
+                👁️ Monitor mode — only Department Officers can update complaint status
+              </p>
+            )}
             {wardFilter > 0 && (
               <p className="text-sm text-accent mt-0.5 flex items-center gap-1">
                 Showing Zone {wardFilter} only
-                <button
-                  className="ml-1 text-muted-foreground hover:text-foreground text-xs"
-                  onClick={() => setWardFilter(0)}
-                >✕ clear</button>
+                <button className="ml-1 text-muted-foreground hover:text-foreground text-xs" onClick={() => setWardFilter(0)}>✕ clear</button>
               </p>
             )}
           </div>
           <div className="flex gap-2 flex-wrap">
             <Button size="sm" variant="outline" onClick={handleRefresh} disabled={refreshing}>
-              <RefreshCw className={`h-4 w-4 mr-1 ${refreshing ? 'animate-spin' : ''}`} />
-              Refresh
+              <RefreshCw className={`h-4 w-4 mr-1 ${refreshing ? 'animate-spin' : ''}`} /> Refresh
             </Button>
             <Button size="sm" variant="outline" onClick={exportExcel} disabled={!filtered.length}>
               <Download className="h-4 w-4 mr-1" /> Excel
@@ -242,15 +246,22 @@ export default function AdminComplaints() {
         {/* Filters */}
         <div className="card-elevated p-3 flex flex-wrap gap-2 items-center">
           <Input
-            placeholder="Search ID or title…"
-            className="h-9 w-44"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
+            placeholder="Search ID or title…" className="h-9 w-44"
+            value={search} onChange={e => setSearch(e.target.value)}
           />
-          <select value={catFilter}    onChange={e => setCatFilter(e.target.value)}    className="h-9 rounded-md border border-input bg-background px-3 text-sm">
-            <option value="">All Categories</option>
-            {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-          </select>
+
+          {isSuperAdmin ? (
+            <select value={catFilter} onChange={e => setCatFilter(e.target.value)} className="h-9 rounded-md border border-input bg-background px-3 text-sm">
+              <option value="">All Categories</option>
+              {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+            </select>
+          ) : (
+            <div className="h-9 flex items-center px-3 rounded-md border border-sky-200 bg-sky-50 dark:bg-sky-900/20 text-sm text-sky-700 dark:text-sky-300 gap-1.5">
+              <Wrench className="h-3 w-3" />
+              {officerCat || 'All (GA)'}
+            </div>
+          )}
+
           <select value={priFilter}    onChange={e => setPriFilter(e.target.value)}    className="h-9 rounded-md border border-input bg-background px-3 text-sm">
             <option value="">All Priorities</option>
             {PRIORITIES.map(p => <option key={p}>{p}</option>)}
@@ -264,23 +275,21 @@ export default function AdminComplaints() {
             {ZONES.map(z => <option key={z} value={z}>Zone {z}</option>)}
           </select>
           {hasFilters && (
-            <Button size="sm" variant="ghost" className="h-9 text-muted-foreground" onClick={clearFilters}>
-              ✕ Clear
-            </Button>
+            <Button size="sm" variant="ghost" className="h-9 text-muted-foreground" onClick={clearFilters}>✕ Clear</Button>
           )}
         </div>
 
         <p className="text-sm text-muted-foreground">
           Showing <strong>{filtered.length}</strong> of {complaints.length} complaints
+          {isOfficer && <span className="text-sky-600 dark:text-sky-400 ml-1">(your department)</span>}
+          {isSuperAdmin && <span className="text-yellow-600 dark:text-yellow-400 ml-1">(all departments)</span>}
         </p>
 
         {/* Cards grid */}
         {filtered.length === 0 ? (
           <div className="card-elevated p-12 text-center text-muted-foreground">
             <p className="font-medium">No complaints match your filters</p>
-            {hasFilters && (
-              <Button variant="outline" size="sm" className="mt-4" onClick={clearFilters}>Clear Filters</Button>
-            )}
+            {hasFilters && <Button variant="outline" size="sm" className="mt-4" onClick={clearFilters}>Clear Filters</Button>}
           </div>
         ) : (
           <div className="grid md:grid-cols-2 gap-4">
@@ -292,13 +301,10 @@ export default function AdminComplaints() {
                   key={c.id}
                   className={`card-elevated p-4 space-y-3 ${c.isSOS ? 'border-l-4 border-l-destructive' : ''} ${isDeleting ? 'opacity-50' : ''}`}
                 >
-                  {/* Top row */}
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="mono-id">{c.id}</span>
-                      {c.isSOS && (
-                        <span className="badge-pill bg-destructive text-destructive-foreground text-[10px]">🚨 SOS</span>
-                      )}
+                      {c.isSOS && <span className="badge-pill bg-destructive text-destructive-foreground text-[10px]">🚨 SOS</span>}
                     </div>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Users className="h-3 w-3" />{c.supportCount || 0}
@@ -317,49 +323,49 @@ export default function AdminComplaints() {
 
                   <div className="text-xs text-muted-foreground">👤 {c.citizenName} · {c.citizenPhone}</div>
 
-                  {/* Actions row */}
                   <div className="flex items-center gap-2 pt-1 border-t border-border">
-                    {/* Status dropdown */}
                     <div className="flex-1 relative">
-                      <select
-                        value={c.status}
-                        onChange={e => handleStatusChange(c.id, e.target.value as Status)}
-                        disabled={isUpdating || isDeleting}
-                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-medium disabled:opacity-60"
-                      >
-                        {STATUSES.map(s => <option key={s}>{s}</option>)}
-                      </select>
-                      {isUpdating && (
-                        <Loader2 className="absolute right-2 top-2 h-4 w-4 animate-spin text-muted-foreground pointer-events-none" />
+                      {canEditStatus ? (
+                        <>
+                          <select
+                            value={c.status}
+                            onChange={e => handleStatusChange(c.id, e.target.value as Status)}
+                            disabled={isUpdating || isDeleting}
+                            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-medium disabled:opacity-60"
+                          >
+                            {STATUSES.map(s => <option key={s}>{s}</option>)}
+                          </select>
+                          {isUpdating && <Loader2 className="absolute right-2 top-2 h-4 w-4 animate-spin text-muted-foreground pointer-events-none" />}
+                        </>
+                      ) : (
+                        /* superAdmin: read-only status badge */
+                        <div className="h-8 flex items-center px-2">
+                          <span className={getStatusClass(c.status)}>{c.status}</span>
+                        </div>
                       )}
                     </div>
 
-                    {/* View */}
                     <button
                       title="View details"
                       className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-accent/10 transition-colors"
-                      onClick={() => setViewId(c.id)}
-                      disabled={isDeleting}
+                      onClick={() => setViewId(c.id)} disabled={isDeleting}
                     >
                       <Eye className="h-4 w-4 text-accent" />
                     </button>
 
-                    {/* Delete */}
+                    {/* Delete: Super Admin only */}
                     <button
-                      title="Delete complaint"
-                      className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-destructive/10 transition-colors disabled:opacity-50"
-                      onClick={() => setDeleteConfirmId(c.id)}
-                      disabled={isDeleting || !!deletingId}
+                      title={!isSuperAdmin ? 'Only Super Admin can delete' : 'Delete complaint'}
+                      className={`h-8 w-8 flex items-center justify-center rounded-md transition-colors disabled:opacity-50 ${
+                        !isSuperAdmin ? 'opacity-30 cursor-not-allowed' : 'hover:bg-destructive/10'
+                      }`}
+                      onClick={() => isSuperAdmin && setDeleteConfirmId(c.id)}
+                      disabled={isDeleting || !!deletingId || !isSuperAdmin}
                     >
                       {isDeleting
                         ? <Loader2 className="h-4 w-4 text-destructive animate-spin" />
-                        : <Trash2 className="h-4 w-4 text-destructive" />
-                      }
+                        : <Trash2 className="h-4 w-4 text-destructive" />}
                     </button>
-                  </div>
-
-                  <div className="flex justify-end">
-                    <span className={getStatusClass(c.status)}>{c.status}</span>
                   </div>
                 </div>
               );
@@ -380,10 +386,7 @@ export default function AdminComplaints() {
                 <h3 className="font-heading font-semibold text-lg">{viewComp.title}</h3>
                 <p className="mono-id text-xs mt-1">{viewComp.id}</p>
               </div>
-              <button
-                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted"
-                onClick={() => setViewId(null)}
-              >
+              <button className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted" onClick={() => setViewId(null)}>
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -393,9 +396,7 @@ export default function AdminComplaints() {
                 <span className={getPriorityClass(viewComp.priority)}>{viewComp.priority}</span>
                 <span className={getStatusClass(viewComp.status)}>{viewComp.status}</span>
                 <span className="badge-pill bg-muted text-muted-foreground">{viewComp.category}</span>
-                {viewComp.isSOS && (
-                  <span className="badge-pill bg-destructive text-destructive-foreground">🚨 SOS</span>
-                )}
+                {viewComp.isSOS && <span className="badge-pill bg-destructive text-destructive-foreground">🚨 SOS</span>}
               </div>
 
               <div className="bg-muted/40 rounded-lg p-3">
@@ -449,23 +450,31 @@ export default function AdminComplaints() {
                 </div>
               )}
 
-              {/* Quick status update inside modal */}
-              <div className="pt-2 border-t border-border">
-                <p className="text-xs text-muted-foreground mb-2">Quick Status Update</p>
-                <div className="relative">
-                  <select
-                    value={viewComp.status}
-                    onChange={e => handleStatusChange(viewComp.id, e.target.value)}
-                    disabled={updatingId === viewComp.id}
-                    className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm disabled:opacity-60"
-                  >
-                    {STATUSES.map(s => <option key={s}>{s}</option>)}
-                  </select>
-                  {updatingId === viewComp.id && (
-                    <Loader2 className="absolute right-3 top-2.5 h-4 w-4 animate-spin text-muted-foreground pointer-events-none" />
-                  )}
+              {/* Status update in modal: only for dept_officer */}
+              {canEditStatus ? (
+                <div className="pt-2 border-t border-border">
+                  <p className="text-xs text-muted-foreground mb-2">Quick Status Update</p>
+                  <div className="relative">
+                    <select
+                      value={viewComp.status}
+                      onChange={e => handleStatusChange(viewComp.id, e.target.value)}
+                      disabled={updatingId === viewComp.id}
+                      className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm disabled:opacity-60"
+                    >
+                      {STATUSES.map(s => <option key={s}>{s}</option>)}
+                    </select>
+                    {updatingId === viewComp.id && (
+                      <Loader2 className="absolute right-3 top-2.5 h-4 w-4 animate-spin text-muted-foreground pointer-events-none" />
+                    )}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="pt-2 border-t border-border">
+                  <p className="text-xs text-yellow-600 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg px-3 py-2">
+                    👁️ Super Admin view — Department Officers manage status updates
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -481,30 +490,20 @@ export default function AdminComplaints() {
               </div>
               <h3 className="font-heading font-semibold">Delete Complaint?</h3>
             </div>
-            <p className="text-sm text-muted-foreground mb-1">
-              <span className="mono-id">{deleteConfirmId}</span>
-            </p>
+            <p className="text-sm text-muted-foreground mb-1"><span className="mono-id">{deleteConfirmId}</span></p>
             <p className="text-xs text-destructive mb-6">This action cannot be undone.</p>
             <div className="flex gap-3">
-              <Button
-                variant="outline"
-                className="flex-1"
-                onClick={() => setDeleteConfirmId(null)}
-                disabled={deletingId === deleteConfirmId}
-              >
+              <Button variant="outline" className="flex-1" onClick={() => setDeleteConfirmId(null)} disabled={deletingId === deleteConfirmId}>
                 Cancel
               </Button>
               <Button
-                variant="destructive"
-                className="flex-1"
+                variant="destructive" className="flex-1"
                 disabled={deletingId === deleteConfirmId}
                 onClick={() => handleDelete(deleteConfirmId)}
               >
-                {deletingId === deleteConfirmId ? (
-                  <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Deleting…</>
-                ) : (
-                  <><Trash2 className="h-4 w-4 mr-1" /> Delete</>
-                )}
+                {deletingId === deleteConfirmId
+                  ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Deleting…</>
+                  : <><Trash2 className="h-4 w-4 mr-1" /> Delete</>}
               </Button>
             </div>
           </div>

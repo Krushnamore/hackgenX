@@ -1,72 +1,79 @@
+/**
+ * backend/src/models/User.js
+ *
+ * Role enum supports two-tier admin hierarchy:
+ *   'superAdmin'   → city-wide monitor, sees ALL complaints + dept filter bar
+ *   'dept_officer' → sees ONLY complaints in their own department
+ *   'admin'        → legacy role, behaves like dept_officer
+ *   'citizen'      → public user who files complaints
+ */
+
 import mongoose from 'mongoose';
-import bcrypt from 'bcryptjs';
+import bcrypt   from 'bcryptjs';
 
 const userSchema = new mongoose.Schema(
   {
-    // ── Shared fields ──────────────────────────────────────────
-    role     : { type: String, enum: ['citizen', 'admin'], required: true },
+    // ── Role ────────────────────────────────────────────────────
+    role: {
+      type    : String,
+      enum    : ['citizen', 'admin', 'superAdmin', 'dept_officer'],
+      required: true,
+    },
+
+    // ── Common fields ────────────────────────────────────────────
     name     : { type: String, required: true, trim: true },
-    email    : { type: String, required: true, unique: true, lowercase: true, trim: true },
-    password : { type: String, required: true, minlength: 4 },
+    email    : { type: String, required: true, unique: true, lowercase: true },
+    password : { type: String, required: true },
     phone    : { type: String, required: true },
 
-    // ── Citizen-only fields ────────────────────────────────────
-    age         : { type: Number },
-    address     : { type: String },
-    ward        : { type: Number, min: 1, max: 20 },
-    pincode     : { type: String },
-    aadharLast4 : { type: String, maxlength: 4 },
-    language    : { type: String, default: 'English' },
-    points      : { type: Number, default: 0 },
-    badge       : { type: String, enum: ['Bronze', 'Silver', 'Gold'], default: 'Bronze' },
+    // ── Citizen-only fields ──────────────────────────────────────
+    age                 : Number,
+    address             : String,
+    ward                : Number,
+    pincode             : String,
+    aadharLast4         : String,
+    language            : { type: String, default: 'English' },
+    points              : { type: Number, default: 0 },
+    badge               : { type: String, enum: ['Bronze', 'Silver', 'Gold'], default: 'Bronze' },
     complaintsSubmitted : { type: Number, default: 0 },
     complaintsResolved  : { type: Number, default: 0 },
+    avatar              : { type: String, default: null },
 
-    // ── Admin-only fields ──────────────────────────────────────
-    employeeId : { type: String },
-    department : {
-      type: String,
-      enum: ['Roads & Infrastructure', 'Water Supply', 'Sanitation', 'Electricity', 'Planning', 'General Administration', ''],
-      default: '',
-    },
-    post : {
-      type: String,
-      default: '',
-    },
-    joinedDate : { type: String },
+    // ── Admin / Officer fields ────────────────────────────────────
+    // department: the department this officer manages.
+    // superAdmin gets 'All Departments' automatically.
+    department : { type: String, default: '' },
+    post       : { type: String, default: '' },
+    employeeId : { type: String, default: '' },
+    joinedDate : { type: String, default: '' },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: {
+      transform(doc, ret) {
+        delete ret.password;
+        delete ret.__v;
+        return ret;
+      },
+    },
+  }
 );
 
-// ── Hash password before save ──────────────────────────────────
+// ── Hash password before save ─────────────────────────────────
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    return next();
-  } catch (err) {
-    return next(err);
-  }
+  this.password = await bcrypt.hash(this.password, 10);
+  next();
 });
 
-// ── Compare password ───────────────────────────────────────────
+// ── Password comparison ───────────────────────────────────────
 userSchema.methods.matchPassword = async function (entered) {
-  return await bcrypt.compare(entered, this.password);
+  return bcrypt.compare(entered, this.password);
 };
 
-// ── Auto-update badge based on points ─────────────────────────
-userSchema.methods.updateBadge = function () {
-  if (this.points >= 1000) this.badge = 'Gold';
-  else if (this.points >= 500) this.badge = 'Silver';
-  else this.badge = 'Bronze';
-};
-
-// ── Remove password from JSON output ──────────────────────────
-userSchema.methods.toJSON = function () {
-  const obj = this.toObject();
-  delete obj.password;
-  return obj;
-};
+// ── Indexes ───────────────────────────────────────────────────
+// NOTE: email index is created automatically by unique:true above — no need to repeat it here
+userSchema.index({ role: 1 });
+userSchema.index({ department: 1 }, { sparse: true });
 
 export const User = mongoose.model('User', userSchema);

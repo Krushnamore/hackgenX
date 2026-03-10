@@ -6,10 +6,8 @@ import {
   Filter, RefreshCw, Loader2, Crown,
 } from 'lucide-react';
 
-// ─── Ward range from User schema (min:1, max:20) ────────────────
 const ALL_WARDS = Array.from({ length: 20 }, (_, i) => i + 1);
 
-// ─── Helpers ────────────────────────────────────────────────────
 const getInitials = (name: string) => {
   const parts = (name || '').trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return '?';
@@ -38,10 +36,8 @@ const computeStreak = (complaints: any[]): number => {
 const badgeEmoji = (badge?: string) =>
   badge === 'Gold' ? '🥇' : badge === 'Silver' ? '🥈' : '🥉';
 
-// ─── Sub-components ──────────────────────────────────────────────
-
-/** City-wide top-3 podium — always shows global leaders regardless of ward filter */
-function GlobalPodium({ top3, currentUserId }: { top3: any[]; currentUserId: string }) {
+/* ─── City Champions Podium ───────────────────────────────────── */
+function GlobalPodium({ top3 = [], currentUserId }: { top3?: any[]; currentUserId: string }) {
   if (!top3.length) return null;
 
   // Display order: 2nd (left), 1st (centre), 3rd (right)
@@ -70,7 +66,7 @@ function GlobalPodium({ top3, currentUserId }: { top3: any[]; currentUserId: str
       <div className="flex items-center gap-2 mb-5">
         <Crown className="h-5 w-5 text-yellow-500" />
         <h2 className="font-heading font-semibold">City Champions</h2>
-        <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full ml-auto">Overall Nashik</span>
+
       </div>
 
       <div className="relative rounded-xl overflow-hidden">
@@ -80,16 +76,15 @@ function GlobalPodium({ top3, currentUserId }: { top3: any[]; currentUserId: str
             const u = top3[rank0];
             if (!u) return <div key={posIdx} className="flex-1 max-w-[120px]" />;
 
-            const cfg  = podiumConfig[posIdx];
-            const isMe = u.id === currentUserId || u._id === currentUserId;
+            const cfg     = podiumConfig[posIdx];
+            const isMe    = u.id === currentUserId || u._id === currentUserId;
             const isFirst = rank0 === 0;
 
             return (
               <div key={u.id || u._id || posIdx} className="flex flex-col items-center flex-1 max-w-[130px]">
                 {isFirst && (
-                  <div className="text-2xl mb-1" style={{ animation: 'bounce 2s infinite' }}>👑</div>
+                  <div className="text-2xl mb-1 animate-bounce">👑</div>
                 )}
-
                 <div className={`
                   rounded-full flex items-center justify-center font-bold
                   bg-gradient-to-br from-muted to-background
@@ -98,7 +93,6 @@ function GlobalPodium({ top3, currentUserId }: { top3: any[]; currentUserId: str
                 `}>
                   {getInitials(u.name)}
                 </div>
-
                 <p className={`mt-2 text-center font-semibold truncate max-w-full px-1 ${isFirst ? 'text-sm' : 'text-xs'}`}>
                   {u.name}
                   {isMe && <span className="text-accent text-[10px] ml-1">(You)</span>}
@@ -110,8 +104,6 @@ function GlobalPodium({ top3, currentUserId }: { top3: any[]; currentUserId: str
                 <span className="text-[10px] mt-1 text-muted-foreground">
                   {badgeEmoji(u.badge)} {u.badge}
                 </span>
-
-                {/* Podium base */}
                 <div className={`w-full mt-3 ${cfg.height} bg-gradient-to-b ${cfg.podiumBg} rounded-t-lg flex items-center justify-center shadow-md`}>
                   <span className="text-white font-heading font-black text-lg drop-shadow">{cfg.label}</span>
                 </div>
@@ -124,20 +116,25 @@ function GlobalPodium({ top3, currentUserId }: { top3: any[]; currentUserId: str
   );
 }
 
-// ─── Main Page ──────────────────────────────────────────────────
+/* ─── Main Page ───────────────────────────────────────────────── */
 export default function CitizenLeaderboard() {
-  const { leaderboard, globalTop3, refreshLeaderboard, currentUser, myComplaints } = useApp();
+  const {
+    leaderboard    = [],
+    globalTop3     = [],
+    refreshLeaderboard,
+    currentUser,
+    myComplaints   = [],
+  } = useApp();
 
-  const [ward,        setWard]        = useState<number>(0);       // 0 = all wards
+  const [ward,        setWard]        = useState<number>(0);
   const [period,      setPeriod]      = useState<'month' | 'week'>('month');
   const [loading,     setLoading]     = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  // Fetch from DB whenever ward changes
   const doFetch = useCallback(async (wardNum: number) => {
+    if (!refreshLeaderboard) return;
     setLoading(true);
     try {
-      // Pass limit=100 so we see all citizens in a ward, not just 50
       await refreshLeaderboard(wardNum || undefined, 100);
       setLastUpdated(new Date());
     } finally {
@@ -145,9 +142,9 @@ export default function CitizenLeaderboard() {
     }
   }, [refreshLeaderboard]);
 
-  useEffect(() => { doFetch(ward); }, [ward]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Fetch on mount + whenever ward changes
+  useEffect(() => { doFetch(ward); }, [ward]); // eslint-disable-line
 
-  // Sort & filter the ward list
   const citizens = useMemo(() =>
     (leaderboard || [])
       .filter((u: any) => u.role === 'citizen' || !u.role)
@@ -156,31 +153,23 @@ export default function CitizenLeaderboard() {
     [leaderboard]
   );
 
-  // Find current user in ranked list
-  const myIndex = citizens.findIndex(
-    (u: any) => u.id === currentUser?.id || u._id === currentUser?._id
-  );
+  const uid      = currentUser?.id || currentUser?._id || '';
+  const myIndex  = citizens.findIndex((u: any) => u.id === uid || u._id === uid);
   const myRank   = myIndex >= 0 ? myIndex + 1 : 0;
   const myRow    = myIndex >= 0 ? citizens[myIndex] : null;
   const myPoints = myRow?.points ?? currentUser?.points ?? 0;
   const myStreak = useMemo(() => computeStreak(myComplaints || []), [myComplaints]);
-  const uid      = currentUser?.id || currentUser?._id || '';
 
-  // Period-filtered complaints (client-side)
   const periodComplaints = useMemo(() => {
     const since = new Date();
     since.setDate(since.getDate() - (period === 'week' ? 7 : 30));
-    return (myComplaints || []).filter(c => new Date(c.createdAt) >= since);
+    return (myComplaints || []).filter((c: any) => new Date(c.createdAt) >= since);
   }, [myComplaints, period]);
 
-  // Gap to person above
-  const nextPointsGap = myRank > 1
-    ? Math.max(0, (citizens[myRank - 2]?.points || 0) - myPoints) : 0;
-  const progressToNext = myRank > 1
-    ? Math.min(100, (myPoints / Math.max(1, citizens[myRank - 2]?.points || 1)) * 100) : 100;
+  const nextPointsGap  = myRank > 1 ? Math.max(0, (citizens[myRank - 2]?.points || 0) - myPoints) : 0;
+  const progressToNext = myRank > 1 ? Math.min(100, (myPoints / Math.max(1, citizens[myRank - 2]?.points || 1)) * 100) : 100;
 
-  // Achievements
-  const hasFirstReport  = (currentUser?.complaintsSubmitted ?? 0) > 0 || (myComplaints?.length ?? 0) > 0;
+  const hasFirstReport  = (currentUser?.complaintsSubmitted ?? 0) > 0 || myComplaints.length > 0;
   const hasResolved     = (currentUser?.complaintsResolved  ?? 0) > 0;
   const hasPeriodReport = periodComplaints.length > 0;
 
@@ -210,13 +199,14 @@ export default function CitizenLeaderboard() {
 
             {/* Controls */}
             <div className="flex items-center gap-2 flex-wrap">
-              {/* Ward / Zone filter */}
-              <div className="flex items-center gap-1.5 bg-warning-foreground/10 border border-warning-foreground/20 rounded-lg px-3 py-1.5">
-                <Filter className="h-3.5 w-3.5 text-warning-foreground/70" />
+
+              {/* ── Ward dropdown — fixed visibility ── */}
+              <div className="flex items-center gap-1.5 bg-white/20 border border-white/40 rounded-lg px-3 py-1.5 backdrop-blur-sm">
+                <Filter className="h-3.5 w-3.5 text-white" />
                 <select
                   value={ward}
                   onChange={e => setWard(Number(e.target.value))}
-                  className="bg-transparent text-warning-foreground text-sm focus:outline-none"
+                  className="bg-white text-gray-800 text-sm font-medium rounded px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-white/50 cursor-pointer min-w-[130px]"
                 >
                   <option value={0}>All Wards</option>
                   {ALL_WARDS.map(w => (
@@ -225,28 +215,28 @@ export default function CitizenLeaderboard() {
                 </select>
               </div>
 
-              {/* Manual refresh */}
+              {/* Refresh */}
               <button
                 onClick={() => doFetch(ward)}
                 disabled={loading}
-                className="h-9 w-9 rounded-lg bg-warning-foreground/10 border border-warning-foreground/20 flex items-center justify-center hover:bg-warning-foreground/20 transition-colors"
+                className="h-9 w-9 rounded-lg bg-white/20 border border-white/40 flex items-center justify-center hover:bg-white/30 transition-colors backdrop-blur-sm"
                 title="Refresh leaderboard"
               >
                 {loading
-                  ? <Loader2 className="h-4 w-4 text-warning-foreground animate-spin" />
-                  : <RefreshCw className="h-4 w-4 text-warning-foreground" />
+                  ? <Loader2 className="h-4 w-4 text-white animate-spin" />
+                  : <RefreshCw className="h-4 w-4 text-white" />
                 }
               </button>
             </div>
           </div>
         </div>
 
-        {/* ── City Champions Podium — always global, never filtered ── */}
+        {/* ── City Champions Podium ── */}
         <GlobalPodium top3={globalTop3} currentUserId={uid} />
 
         <div className="grid lg:grid-cols-3 gap-6">
 
-          {/* ── Left: Ward Rankings ── */}
+          {/* ── Left: Rankings ── */}
           <div className="lg:col-span-2 card-elevated p-5">
             <div className="flex items-center justify-between gap-3 flex-wrap mb-5">
               <div className="flex items-center gap-2">
@@ -256,8 +246,6 @@ export default function CitizenLeaderboard() {
                 </h2>
                 {loading && <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" />}
               </div>
-
-              {/* Period toggle */}
               <div className="bg-muted rounded-full p-1 flex items-center gap-1 text-sm">
                 {(['month', 'week'] as const).map(p => (
                   <button
@@ -275,6 +263,15 @@ export default function CitizenLeaderboard() {
               </div>
             </div>
 
+            {/* Loading skeleton */}
+            {loading && citizens.length === 0 && (
+              <div className="space-y-2">
+                {[...Array(6)].map((_, i) => (
+                  <div key={i} className="rounded-xl border border-border bg-muted/30 p-4 h-16 animate-pulse" />
+                ))}
+              </div>
+            )}
+
             {/* Empty state */}
             {!loading && citizens.length === 0 && (
               <div className="text-center py-16 text-muted-foreground">
@@ -284,23 +281,12 @@ export default function CitizenLeaderboard() {
               </div>
             )}
 
-            {/* Loading skeleton */}
-            {loading && citizens.length === 0 && (
-              <div className="space-y-2">
-                {[...Array(5)].map((_, i) => (
-                  <div key={i} className="rounded-xl border border-border bg-muted/30 p-4 h-16 animate-pulse" />
-                ))}
-              </div>
-            )}
-
             {/* Ranked list */}
             <div className="space-y-2">
               {citizens.map((u: any, i: number) => {
-                const isMe     = u.id === uid || u._id === uid;
-                const isTop3   = i < 3;
-                // Is this person also in the city-wide top3?
-                const cityRank = globalTop3.findIndex(t => t.id === u.id || t._id === u._id);
-                const isCityChamp = cityRank >= 0;
+                const isMe        = u.id === uid || u._id === uid;
+                const isTop3      = i < 3;
+                const isCityChamp = (globalTop3 || []).some((t: any) => t.id === u.id || t._id === u._id);
 
                 return (
                   <div
@@ -313,7 +299,7 @@ export default function CitizenLeaderboard() {
                           : 'bg-background border-border hover:bg-muted/20'
                     }`}
                   >
-                    {/* Rank */}
+                    {/* Rank medal */}
                     <div className="w-7 flex-shrink-0 text-center">
                       {i === 0 ? <span className="text-lg">🥇</span>
                         : i === 1 ? <span className="text-lg">🥈</span>
@@ -374,17 +360,15 @@ export default function CitizenLeaderboard() {
             )}
           </div>
 
-          {/* ── Right: Your Stats + Achievements ── */}
+          {/* ── Right: Stats + Achievements ── */}
           <div className="space-y-5">
 
-            {/* Stats card */}
             <div className="card-elevated p-5">
               <div className="flex items-center gap-2 mb-5">
                 <TrendingUp className="h-5 w-5 text-accent" />
                 <h2 className="font-heading font-semibold">Your Stats</h2>
               </div>
 
-              {/* Rank */}
               <div className="text-center mb-5">
                 <div className="text-5xl font-heading font-black text-accent">
                   {myRank ? `#${myRank}` : '—'}
@@ -412,7 +396,6 @@ export default function CitizenLeaderboard() {
                 </div>
               </div>
 
-              {/* Progress to next rank */}
               <div className="rounded-xl bg-accent/5 border border-accent/10 p-4">
                 <div className="text-sm font-semibold text-accent">
                   {myRank <= 1 ? "🏆 You're #1!" : 'Points to next rank'}
@@ -429,7 +412,6 @@ export default function CitizenLeaderboard() {
               </div>
             </div>
 
-            {/* Achievements */}
             <div className="card-elevated p-5">
               <div className="flex items-center gap-2 mb-4">
                 <Star className="h-5 w-5 text-warning" />
@@ -437,37 +419,15 @@ export default function CitizenLeaderboard() {
               </div>
               <div className="space-y-3">
                 {[
-                  {
-                    label: 'First Report 📋',
-                    sub: 'Submit your first civic issue',
-                    unlocked: hasFirstReport,
-                    progress: null,
-                  },
-                  {
-                    label: 'Issue Resolved ✅',
-                    sub: 'Have a complaint marked resolved',
-                    unlocked: hasResolved,
-                    progress: null,
-                  },
-                  {
-                    label: `Active ${period === 'month' ? 'Month' : 'Week'} 🔥`,
-                    sub: `Report an issue in the current ${period}`,
-                    unlocked: hasPeriodReport,
-                    progress: null,
-                  },
-                  {
-                    label: '3-Day Streak 🌟',
-                    sub: 'Report on 3 consecutive days',
-                    unlocked: myStreak >= 3,
-                    progress: myStreak < 3 ? `${myStreak}/3` : null,
-                  },
+                  { label: 'First Report 📋',  sub: 'Submit your first civic issue',            unlocked: hasFirstReport,  progress: null },
+                  { label: 'Issue Resolved ✅', sub: 'Have a complaint marked resolved',         unlocked: hasResolved,     progress: null },
+                  { label: `Active ${period === 'month' ? 'Month' : 'Week'} 🔥`, sub: `Report an issue in the current ${period}`, unlocked: hasPeriodReport, progress: null },
+                  { label: '3-Day Streak 🌟',  sub: 'Report on 3 consecutive days',             unlocked: myStreak >= 3,   progress: myStreak < 3 ? `${myStreak}/3` : null },
                 ].map(a => (
                   <div
                     key={a.label}
                     className={`rounded-xl p-3 flex items-center justify-between gap-3 border ${
-                      a.unlocked
-                        ? 'bg-success/10 border-success/15'
-                        : 'bg-muted/30 border-border opacity-60'
+                      a.unlocked ? 'bg-success/10 border-success/15' : 'bg-muted/30 border-border opacity-60'
                     }`}
                   >
                     <div className="min-w-0">
@@ -487,7 +447,6 @@ export default function CitizenLeaderboard() {
               </div>
             </div>
 
-            {/* Points guide */}
             <div className="card-elevated p-4">
               <h3 className="font-heading font-semibold text-sm mb-3 flex items-center gap-2">
                 <Star className="h-4 w-4 text-warning" /> How to Earn Points
