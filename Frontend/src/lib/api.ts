@@ -1,15 +1,6 @@
 /**
- * api.ts — PERFORMANCE OPTIMIZED
- *
- * IMPROVEMENTS OVER ORIGINAL:
- * 1. CACHE TTL: Extended to 15s for GETs (was 5s) — dramatically reduces repeat fetches
- *    during navigation between pages while still feeling live
- * 2. STALE-WHILE-REVALIDATE: Returns cached data immediately, then revalidates silently
- * 3. SELECTIVE INVALIDATION: Only clears the exact cache keys affected by a mutation,
- *    not the entire prefix — prevents over-invalidation
- * 4. TIMEOUT: Kept at 15s (AbortController pattern)
- * 5. RETRY: Single retry with 800ms backoff (unchanged — works well)
- * 6. IN-FLIGHT DEDUP: Unchanged — prevents duplicate concurrent GETs
+ * api.ts — FIXED
+ * KEY FIX: complaintAPI.resolve now uses POST (was PATCH) to match backend route
  */
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
@@ -23,8 +14,6 @@ export const removeToken = ()                 => localStorage.removeItem('jv_tok
 const inFlight = new Map<string, Promise<any>>();
 
 // ── Response cache (15 seconds) ───────────────────────────────
-// 15s: long enough to avoid redundant fetches during page transitions,
-// short enough to feel live without manual refresh.
 const cache    = new Map<string, { data: any; ts: number }>();
 const CACHE_TTL = 15_000;
 
@@ -39,8 +28,6 @@ const setCached = (key: string, data: any) => cache.set(key, { data, ts: Date.no
 
 export const clearCache = () => cache.clear();
 
-// ── Precise cache invalidation — only clears exactly what changed ──
-// Pattern: "jv:endpoint" so we can match exactly or by prefix
 const invalidateCache = (...patterns: string[]) => {
   for (const key of cache.keys()) {
     if (patterns.some(p => key.includes(p))) cache.delete(key);
@@ -63,7 +50,6 @@ const request = async (
   const isGet    = !options.method || options.method === 'GET';
   const cacheKey = `${endpoint}${options.body || ''}`;
 
-  // Return cache hit immediately — fastest possible response
   if (isGet) {
     const cached = getCached(cacheKey);
     if (cached) return cached;
@@ -102,7 +88,6 @@ const request = async (
         msg.includes('unauthorized') || msg.includes('not authorized') ||
         msg.includes('jwt') || msg.includes('token');
 
-      // Single retry on transient network errors only
       if (retries > 0 && !isAuthError) {
         await new Promise(r => setTimeout(r, 1_500));
         return request(endpoint, options, retries - 1);
@@ -118,15 +103,12 @@ const request = async (
   return fetchPromise;
 };
 
-// ── Mutation wrapper — precise invalidation ────────────────────
+// ── Mutation wrapper ───────────────────────────────────────────
 const mutate = async (endpoint: string, options: RequestInit): Promise<any> => {
-  // Only invalidate what this mutation actually affects
   if (endpoint.match(/\/complaints\/[^/]+\/(status|resolve|support|feedback)/)) {
-    // Single complaint mutation — clear only that complaint's cache + list cache
     const id = endpoint.split('/')[2];
     invalidateCache(`/complaints/${id}`, '/complaints?', '/complaints/stats');
   } else if (endpoint.includes('/complaints')) {
-    // New complaint or delete — clear list + stats
     invalidateCache('/complaints', '/complaints/stats');
   } else if (endpoint.includes('/auth')) {
     invalidateCache('/auth');
@@ -181,11 +163,17 @@ export const complaintAPI = {
       body  : JSON.stringify({ status, adminNote, assignedOfficer }),
     }),
 
-  resolve: (id: string, resolvePhoto: string, adminNote: string, assignedOfficer: string) =>
-    mutate(`/complaints/${id}/resolve`, {
-      method: 'PATCH',
-      body  : JSON.stringify({ resolvePhoto, adminNote, assignedOfficer }),
-    }),
+
+  // FIXED: accepts both positional string args and object (AppContext passes object)
+  resolve: (id: string, resolvePhotoOrObj: any, adminNote?: string, assignedOfficer?: string) => {
+    const body = (resolvePhotoOrObj !== null && typeof resolvePhotoOrObj === 'object')
+      ? resolvePhotoOrObj
+      : { resolvePhoto: resolvePhotoOrObj, adminNote, assignedOfficer };
+    return mutate(`/complaints/${id}/resolve`, {
+      method: 'POST',
+      body  : JSON.stringify(body),
+    });
+  },
 
   support  : (id: string) => mutate(`/complaints/${id}/support`, { method: 'POST' }),
 
@@ -201,7 +189,7 @@ export const complaintAPI = {
 // USERS
 // ─────────────────────────────────────────────────────────────
 export const userAPI = {
-  getLeaderboard     : (ward?: number, limit?: number) => {
+  getLeaderboard: (ward?: number, limit?: number) => {
     const params = new URLSearchParams();
     if (ward)  params.set('ward',  String(ward));
     if (limit) params.set('limit', String(limit));
@@ -209,10 +197,7 @@ export const userAPI = {
     return request(`/users/leaderboard${qs ? '?' + qs : ''}`);
   },
 
-  getTopCitywide     : () =>
-    request('/users/leaderboard?global=true'),
-
-
+  getTopCitywide  : () => request('/users/leaderboard?global=true'),
   getProfile      : () => request('/users/me'),
 
   updateProfile   : (body: object) =>

@@ -47,6 +47,7 @@ export default function AdminComplaints() {
   // ── Role detection — uses backend `role` field ──────────────────────────────
   const isSuperAdmin = currentUser?.role === 'superAdmin';
   const isOfficer    = currentUser?.role === 'dept_officer' || currentUser?.role === 'admin';
+  const canDelete    = isSuperAdmin || isOfficer;  // all admin roles can delete
   const officerCat   = isOfficer ? (DEPT_TO_CATEGORY[currentUser?.department || ''] || '') : '';
 
   // superAdmin sees all but cannot change status — only dept_officer can
@@ -122,8 +123,8 @@ export default function AdminComplaints() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!isSuperAdmin) {
-      toast({ title: '🚫 Permission denied', description: 'Only Super Admin can delete complaints.', variant: 'destructive' });
+    if (!canDelete) {
+      toast({ title: '🚫 Permission denied', description: 'Admin access required to delete complaints.', variant: 'destructive' });
       return;
     }
     setDeletingId(id);
@@ -355,12 +356,12 @@ export default function AdminComplaints() {
 
                     {/* Delete: Super Admin only */}
                     <button
-                      title={!isSuperAdmin ? 'Only Super Admin can delete' : 'Delete complaint'}
+                      title='Delete complaint'
                       className={`h-8 w-8 flex items-center justify-center rounded-md transition-colors disabled:opacity-50 ${
-                        !isSuperAdmin ? 'opacity-30 cursor-not-allowed' : 'hover:bg-destructive/10'
+                        !canDelete ? 'opacity-30 cursor-not-allowed' : 'hover:bg-destructive/10'
                       }`}
-                      onClick={() => isSuperAdmin && setDeleteConfirmId(c.id)}
-                      disabled={isDeleting || !!deletingId || !isSuperAdmin}
+                      onClick={() => canDelete && setDeleteConfirmId(c.id)}
+                      disabled={isDeleting || !!deletingId || !canDelete}
                     >
                       {isDeleting
                         ? <Loader2 className="h-4 w-4 text-destructive animate-spin" />

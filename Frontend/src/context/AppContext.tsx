@@ -16,6 +16,7 @@ import {
   removeToken,
   clearCache,
 } from "@/lib/api";
+import { addNotification, getNotifications } from "@/hooks/useNotifications";
 
 /* ================= TYPES ================= */
 
@@ -277,6 +278,28 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       });
       // Refresh user so points/badge update immediately in UI
       refreshCurrentUser();
+
+      // 🔔 Notify citizen: points earned
+      const citizenId = currentUserRef.current?._id || currentUserRef.current?.id;
+      if (citizenId) {
+        addNotification(citizenId, {
+          type   : 'points_earned',
+          title  : '🏆 +50 Points Earned!',
+          message: `Your complaint ${normalized.title} was submitted. You earned 50 points!`,
+          link   : '/citizen/rewards',
+        });
+      }
+
+      // 🔔 Notify ALL admins: new complaint filed
+      // We store admin notifications under a shared key "admins"
+      addNotification('admins', {
+        type   : 'new_complaint',
+        title  : '📋 New Complaint Filed',
+        message: `${normalized.title} — ${normalized.category}, Zone ${normalized.ward} by ${normalized.citizenName || currentUserRef.current?.name}`,
+        link   : '/admin/complaints',
+        meta   : { complaintId: normalized.id },
+      });
+
       return normalized;
     }
     return newComplaint;
@@ -333,6 +356,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         });
       }
     } catch (err) { throw err; }
+    // Find the complaint to get citizen info
+    const resolvedC = complaints.find((c: any) => c.id === id || c._id === id);
+
     setComplaints(prev => {
       const updated = prev.map(c =>
         c.id === id || c._id === id
@@ -342,6 +368,26 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       ls.set(COMPLAINTS_KEY, updated);
       return updated;
     });
+
+    // 🔔 Notify citizen: complaint resolved + points
+    if (resolvedC) {
+      const citizenId = resolvedC.citizenId?.toString?.() || resolvedC.citizenId;
+      if (citizenId) {
+        addNotification(citizenId, {
+          type   : 'resolved',
+          title  : '✅ Your Complaint Was Resolved!',
+          message: `${resolvedC.title} has been resolved by ${officer || 'Municipal Officer'}. You earned +100 points!`,
+          link   : `/citizen/track?id=${resolvedC.complaintId || id}`,
+        });
+        addNotification(citizenId, {
+          type   : 'points_earned',
+          title  : '🏆 +100 Points Earned!',
+          message: 'Your complaint was resolved! Check your rewards page to see your updated balance.',
+          link   : '/citizen/rewards',
+        });
+      }
+    }
+
     // Refresh leaderboard so points update for citizen
     refreshLeaderboard();
   }, [refreshLeaderboard]);
