@@ -1,25 +1,15 @@
 /**
- * server.js — PERFORMANCE OPTIMIZED
- *
- * IMPROVEMENTS:
- * 1. COMPRESSION: gzip/brotli via 'compression' middleware — JSON payloads shrink 60-80%
- * 2. KEEP-ALIVE: Persistent connections reduce TCP handshake overhead per request
- * 3. RESPONSE TIME: X-Response-Time header helps diagnose slow endpoints in production
- * 4. HELMET: Security headers (lightweight, recommended for any public-facing API)
- * 5. CACHE HEADERS: GET routes for static-ish data (leaderboard, stats) get short cache hints
- *
- * Install new deps first:
- *   npm install compression helmet
+ * server.js — PERFORMANCE OPTIMIZED + SERVES REACT FRONTEND
  */
 
-import express    from 'express';
-import cors       from 'cors';
-import morgan     from 'morgan';
-import mongoose   from 'mongoose';
+import express     from 'express';
+import cors        from 'cors';
+import morgan      from 'morgan';
+import mongoose    from 'mongoose';
 import compression from 'compression';
-import helmet     from 'helmet';
-import path       from 'path';                    // ← NEW
-import { fileURLToPath } from 'url';              // ← NEW
+import helmet      from 'helmet';
+import path        from 'path';
+import { fileURLToPath } from 'url';
 import { connectDB }  from './lib/db.js';
 import { ENV }        from './lib/env.js';
 import { requireDb }  from './middleware/RequireDb.js';
@@ -29,21 +19,21 @@ import complaintRoutes from './routes/Complaints.js';
 import userRoutes      from './routes/Users.js';
 
 // ── ESM __dirname fix ──────────────────────────────────────────
-const __filename = fileURLToPath(import.meta.url);  // ← NEW
-const __dirname  = path.dirname(__filename);         // ← NEW
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
 // ── Connect to MongoDB ─────────────────────────────────────────
 await connectDB();
 
 const app = express();
 
-// ── Security headers (lightweight) ────────────────────────────
+// ── Security headers ───────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
 
-// ── Gzip compression — biggest single win for JSON APIs ───────
+// ── Gzip compression ───────────────────────────────────────────
 app.use(compression());
 
-// ── CORS ──────────────────────────────────────────────────────
+// ── CORS ───────────────────────────────────────────────────────
 const allowedOrigins = [
   'http://localhost:8080',
   'http://localhost:5173',
@@ -61,11 +51,11 @@ app.use(cors({
   credentials: true,
 }));
 
-// ── Body parsing ──────────────────────────────────────────────
+// ── Body parsing ───────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// ── Request timing header (dev debugging only) ────────────────
+// ── Dev-only: Request timing + HTTP logging ────────────────────
 if (ENV.NODE_ENV === 'development') {
   app.use((req, res, next) => {
     const start = Date.now();
@@ -76,14 +66,10 @@ if (ENV.NODE_ENV === 'development') {
     };
     next();
   });
-}
-
-// ── HTTP logging ──────────────────────────────────────────────
-if (ENV.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-// ── Cache-Control hints for read-heavy endpoints ──────────────
+// ── Cache-Control hints ────────────────────────────────────────
 app.use('/api/users/leaderboard', (req, res, next) => {
   if (req.method === 'GET') res.set('Cache-Control', 'public, max-age=30');
   next();
@@ -93,12 +79,12 @@ app.use('/api/complaints/stats', (req, res, next) => {
   next();
 });
 
-// ── Routes ────────────────────────────────────────────────────
+// ── API Routes ─────────────────────────────────────────────────
 app.use('/api/auth',       requireDb, authRoutes);
 app.use('/api/complaints', requireDb, complaintRoutes);
 app.use('/api/users',      requireDb, userRoutes);
 
-// ── Health check ──────────────────────────────────────────────
+// ── Health check ───────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.json({
     status : 'ok',
@@ -113,28 +99,30 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// ── Serve React Frontend in Production ────────────────────────
-// ✅ This must come AFTER all /api routes
-// ✅ Path: backend/src/server.js → ../../Frontend/dist
+// ── Serve React Frontend (PRODUCTION ONLY) ─────────────────────
+// ✅ Must come AFTER all /api routes
+// ✅ server.js is at /app/backend/src/server.js
+// ✅ __dirname   = /app/backend/src
+// ✅ frontendDist = /app/Frontend/dist
 if (ENV.NODE_ENV === 'production') {
   const frontendDist = path.join(__dirname, '../../Frontend/dist');
 
   app.use(express.static(frontendDist));
 
-  // All non-API routes serve React's index.html (React Router support)
+  // All non-API routes → React app (supports React Router)
   app.get('*', (req, res) => {
     res.sendFile(path.join(frontendDist, 'index.html'));
   });
 }
 
-// ── 404 handler (only reached in development) ─────────────────
+// ── 404 (dev only) ─────────────────────────────────────────────
 if (ENV.NODE_ENV !== 'production') {
   app.use((req, res) => {
     res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` });
   });
 }
 
-// ── Global error handler ──────────────────────────────────────
+// ── Global error handler ───────────────────────────────────────
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   const status  = err.status || err.statusCode || 500;
@@ -143,7 +131,7 @@ app.use((err, req, res, next) => {
   if (!res.headersSent) res.status(status).json({ success: false, message });
 });
 
-// ── Start server with keep-alive ──────────────────────────────
+// ── Start server ───────────────────────────────────────────────
 const server = app.listen(ENV.PORT, () => {
   console.log(`🚀 JANVANI backend running on http://localhost:${ENV.PORT}`);
   console.log(`📡 Environment: ${ENV.NODE_ENV}`);

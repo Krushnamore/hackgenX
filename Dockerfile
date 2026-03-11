@@ -4,10 +4,13 @@ WORKDIR /app/Frontend
 COPY Frontend/package*.json ./
 RUN npm install
 COPY Frontend/ ./
+
+# Build-time variables baked into React by Vite
 ARG VITE_API_URL=/api
 ARG VITE_GROQ_API_KEY
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_GROQ_API_KEY=$VITE_GROQ_API_KEY
+
 RUN npm run build
 
 # ── Stage 2: Run Express Backend + Serve Frontend ─────────────
@@ -17,9 +20,10 @@ COPY backend/package*.json ./
 RUN npm install --production
 COPY backend/ ./
 
-# Copy built React app from Stage 1 into correct path
-# server.js looks for: ../../Frontend/dist (relative to backend/src/)
-# which resolves to:   /app/Frontend/dist
+# Copy built React app from Stage 1
+# server.js is at: /app/backend/src/server.js
+# it looks for:    ../../Frontend/dist
+# which resolves:  /app/Frontend/dist ✅
 COPY --from=frontend-build /app/Frontend/dist /app/Frontend/dist
 
 EXPOSE 5000
