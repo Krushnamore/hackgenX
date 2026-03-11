@@ -28,6 +28,7 @@ interface AppContextType {
   register: (data: any) => Promise<any>;
   logout: () => void;
   refreshComplaints: () => Promise<void>;
+  refreshCurrentUser: () => Promise<void>;
   myComplaints: any[];
   updateComplaintStatus: (id: string, status: string) => Promise<void>;
   deleteComplaint: (id: string) => Promise<void>;
@@ -116,19 +117,42 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (currentUser) localStorage.setItem(USER_KEY, JSON.stringify(currentUser));
   }, [currentUser]);
 
+  // On mount: if user is already logged in (page refresh), reload data
+  useEffect(() => {
+    if (getToken()) {
+      loadComplaints();
+      loadUsers();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   /* ── COMPLAINTS ── */
 
   const loadComplaints = useCallback(async () => {
     try {
       const res = await complaintAPI.getAll();
       if (res?.complaints) {
-        setComplaints(res.complaints);
-        ls.set(COMPLAINTS_KEY, res.complaints);
+        // Normalize _id → id so UI can always use c.id
+        const normalized = res.complaints.map((c: any) => ({
+          ...c,
+          id: c.id || c._id?.toString(),
+        }));
+        setComplaints(normalized);
+        ls.set(COMPLAINTS_KEY, normalized);
       }
     } catch (err) { console.warn("Failed loading complaints", err); }
   }, []);
 
   const refreshComplaints = useCallback(() => loadComplaints(), [loadComplaints]);
+
+  /* ── USERS (for admin dashboard citizens count) ── */
+
+  const loadUsers = useCallback(async () => {
+    try {
+      const data = await apiFetch('/users/leaderboard?limit=500');
+      const list: any[] = data?.users ?? data?.leaderboard ?? (Array.isArray(data) ? data : []);
+      setUsers(list);
+    } catch (err) { console.warn('Failed loading users', err); }
+  }, []);
 
   /* ── LEADERBOARD ── */
 
@@ -163,6 +187,21 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, []);
 
+  /* ── REFRESH CURRENT USER (get fresh points/badge from server) ── */
+
+  const refreshCurrentUser = useCallback(async () => {
+    try {
+      const data = await apiFetch('/auth/me');
+      const user = data?.user ?? data;
+      if (user) {
+        setCurrentUser(user);
+        localStorage.setItem(USER_KEY, JSON.stringify(user));
+      }
+    } catch (err) {
+      console.warn('Failed refreshing user', err);
+    }
+  }, []);
+
   /* ── LOGIN ── */
 
   const login = async (email: string, password: string, role?: "citizen" | "admin") => {
@@ -177,6 +216,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setToken(result.token);
     setCurrentUser(result.user);
     await loadComplaints();
+    await loadUsers();
     return result.user;
   };
 
@@ -229,19 +269,33 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
     const newComplaint = result?.complaint ?? result;
     if (newComplaint) {
+      const normalized = { ...newComplaint, id: newComplaint.id || newComplaint._id?.toString() };
       setComplaints(prev => {
-        const updated = [newComplaint, ...prev];
+        const updated = [normalized, ...prev];
         ls.set(COMPLAINTS_KEY, updated);
         return updated;
       });
+      // Refresh user so points/badge update immediately in UI
+      refreshCurrentUser();
+      return normalized;
     }
     return newComplaint;
-  }, []);
+  }, [refreshCurrentUser]);
 
   /* ── UPDATE STATUS ── */
 
   const updateComplaintStatus = useCallback(async (id: string, status: string) => {
-    await complaintAPI.updateStatus(id, status);
+    // Use direct fetch to avoid dependency on complaintAPI.updateStatus existing
+    try {
+      if (typeof (complaintAPI as any).updateStatus === 'function') {
+        await (complaintAPI as any).updateStatus(id, status);
+      } else {
+        await apiFetch(`/complaints/${id}/status`, {
+          method: 'PATCH',
+          body: JSON.stringify({ status }),
+        });
+      }
+    } catch (err) { throw err; }
     setComplaints(prev => {
       const updated = prev.map(c => c.id === id || c._id === id ? { ...c, status } : c);
       ls.set(COMPLAINTS_KEY, updated);
@@ -252,7 +306,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   /* ── DELETE ── */
 
   const deleteComplaint = useCallback(async (id: string) => {
-    await complaintAPI.delete(id);
+    try {
+      if (typeof (complaintAPI as any).delete === 'function') {
+        await (complaintAPI as any).delete(id);
+      } else {
+        await apiFetch(`/complaints/${id}`, { method: 'DELETE' });
+      }
+    } catch (err) { throw err; }
     setComplaints(prev => {
       const updated = prev.filter(c => c.id !== id && c._id !== id);
       ls.set(COMPLAINTS_KEY, updated);
@@ -263,17 +323,28 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   /* ── RESOLVE ── */
 
   const resolveComplaint = useCallback(async (id: string, photo?: string, note?: string, officer?: string) => {
-    await complaintAPI.resolve(id, { resolvePhoto: photo, adminNote: note, assignedOfficer: officer });
+    try {
+      if (typeof (complaintAPI as any).resolve === 'function') {
+        await (complaintAPI as any).resolve(id, { resolvePhoto: photo, adminNote: note, assignedOfficer: officer });
+      } else {
+        await apiFetch(`/complaints/${id}/resolve`, {
+          method: 'POST',
+          body: JSON.stringify({ resolvePhoto: photo, adminNote: note, assignedOfficer: officer }),
+        });
+      }
+    } catch (err) { throw err; }
     setComplaints(prev => {
       const updated = prev.map(c =>
         c.id === id || c._id === id
-          ? { ...c, status: "Resolved", resolvePhoto: photo, adminNote: note, assignedOfficer: officer }
+          ? { ...c, status: 'Resolved', resolvePhoto: photo, adminNote: note, assignedOfficer: officer }
           : c
       );
       ls.set(COMPLAINTS_KEY, updated);
       return updated;
     });
-  }, []);
+    // Refresh leaderboard so points update for citizen
+    refreshLeaderboard();
+  }, [refreshLeaderboard]);
 
   /* ── DERIVED ── */
 
@@ -288,7 +359,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     <AppContext.Provider value={{
       currentUser, complaints, users, loading,
       login, register, logout,
-      refreshComplaints, myComplaints,
+      refreshComplaints, refreshCurrentUser, myComplaints,
       addComplaint,
       updateComplaintStatus, deleteComplaint, resolveComplaint,
       leaderboard, globalTop3, refreshLeaderboard,

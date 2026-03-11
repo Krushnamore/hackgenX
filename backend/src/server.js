@@ -39,8 +39,22 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
 
 // ── CORS ──────────────────────────────────────────────────────
+const allowedOrigins = [
+  'http://localhost:8080',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  ENV.CLIENT_URL,
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.CLIENT_URL,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Allow any onrender.com subdomain
+    if (origin.endsWith('.onrender.com')) return callback(null, true);
+    callback(new Error(`CORS blocked: ${origin}`));
+  },
   credentials: true,
 }));
 
@@ -114,10 +128,8 @@ app.use((err, req, res, next) => {
 });
 
 // ── Start server with keep-alive ──────────────────────────────
-const PORT = process.env.PORT || ENV.PORT || 5000;
-
-const server = app.listen(PORT, () => {
-  console.log(`🚀 JANVANI backend running on port ${PORT}`);
+const server = app.listen(ENV.PORT, () => {
+  console.log(`🚀 JANVANI backend running on http://localhost:${ENV.PORT}`);
   console.log(`📡 Environment: ${ENV.NODE_ENV}`);
 });
 

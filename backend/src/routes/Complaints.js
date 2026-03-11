@@ -138,8 +138,22 @@ router.post('/', protect, async (req, res) => {
       citizenPhone: user.phone,
     });
 
-    // Increment citizen's submission count
-    await User.findByIdAndUpdate(user._id, { $inc: { complaintsSubmitted: 1 } });
+    // Increment citizen's submission count + award 50 points
+    const updatedUser = await User.findByIdAndUpdate(
+      user._id,
+      { $inc: { complaintsSubmitted: 1, points: 50 } },
+      { new: true }
+    );
+
+    // Update badge based on new points
+    if (updatedUser) {
+      let badge = 'Bronze';
+      if (updatedUser.points >= 500) badge = 'Gold';
+      else if (updatedUser.points >= 200) badge = 'Silver';
+      if (badge !== updatedUser.badge) {
+        await User.findByIdAndUpdate(user._id, { badge });
+      }
+    }
 
     res.status(201).json({ success: true, complaint });
   } catch (err) {
@@ -221,10 +235,19 @@ router.post('/:id/resolve', protect, async (req, res) => {
 
     await complaint.save();
 
-    // Award points to citizen
-    await User.findByIdAndUpdate(complaint.citizenId, {
+    // Award points to citizen + update badge
+    const updatedCitizen = await User.findByIdAndUpdate(complaint.citizenId, {
       $inc: { points: 100, complaintsResolved: 1 },
-    });
+    }, { new: true });
+
+    if (updatedCitizen) {
+      let badge = 'Bronze';
+      if (updatedCitizen.points >= 500) badge = 'Gold';
+      else if (updatedCitizen.points >= 200) badge = 'Silver';
+      if (badge !== updatedCitizen.badge) {
+        await User.findByIdAndUpdate(complaint.citizenId, { badge });
+      }
+    }
 
     res.json({ success: true, complaint });
   } catch (err) {
