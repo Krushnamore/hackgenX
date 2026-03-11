@@ -18,6 +18,8 @@ import morgan     from 'morgan';
 import mongoose   from 'mongoose';
 import compression from 'compression';
 import helmet     from 'helmet';
+import path       from 'path';                    // ← NEW
+import { fileURLToPath } from 'url';              // ← NEW
 import { connectDB }  from './lib/db.js';
 import { ENV }        from './lib/env.js';
 import { requireDb }  from './middleware/RequireDb.js';
@@ -25,6 +27,10 @@ import { requireDb }  from './middleware/RequireDb.js';
 import authRoutes      from './routes/Auth.js';
 import complaintRoutes from './routes/Complaints.js';
 import userRoutes      from './routes/Users.js';
+
+// ── ESM __dirname fix ──────────────────────────────────────────
+const __filename = fileURLToPath(import.meta.url);  // ← NEW
+const __dirname  = path.dirname(__filename);         // ← NEW
 
 // ── Connect to MongoDB ─────────────────────────────────────────
 await connectDB();
@@ -35,7 +41,6 @@ const app = express();
 app.use(helmet({ contentSecurityPolicy: false }));
 
 // ── Gzip compression — biggest single win for JSON APIs ───────
-// Compresses responses > 1KB. Complaint list goes from ~50KB → ~8KB.
 app.use(compression());
 
 // ── CORS ──────────────────────────────────────────────────────
@@ -48,10 +53,8 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
-    // Allow any onrender.com subdomain
     if (origin.endsWith('.onrender.com')) return callback(null, true);
     callback(new Error(`CORS blocked: ${origin}`));
   },
@@ -66,7 +69,6 @@ app.use(express.urlencoded({ extended: true }));
 if (ENV.NODE_ENV === 'development') {
   app.use((req, res, next) => {
     const start = Date.now();
-    // Patch json() so we log timing without touching headers after send
     const origJson = res.json.bind(res);
     res.json = (body) => {
       console.debug(`[${req.method}] ${req.path} — ${Date.now() - start}ms`);
@@ -82,8 +84,6 @@ if (ENV.NODE_ENV === 'development') {
 }
 
 // ── Cache-Control hints for read-heavy endpoints ──────────────
-// These tell the browser/CDN to cache for a short time.
-// The frontend's own in-memory cache still takes priority.
 app.use('/api/users/leaderboard', (req, res, next) => {
   if (req.method === 'GET') res.set('Cache-Control', 'public, max-age=30');
   next();
@@ -113,10 +113,26 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// ── 404 handler ───────────────────────────────────────────────
-app.use((req, res) => {
-  res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` });
-});
+// ── Serve React Frontend in Production ────────────────────────
+// ✅ This must come AFTER all /api routes
+// ✅ Path: backend/src/server.js → ../../Frontend/dist
+if (ENV.NODE_ENV === 'production') {
+  const frontendDist = path.join(__dirname, '../../Frontend/dist');
+
+  app.use(express.static(frontendDist));
+
+  // All non-API routes serve React's index.html (React Router support)
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
+}
+
+// ── 404 handler (only reached in development) ─────────────────
+if (ENV.NODE_ENV !== 'production') {
+  app.use((req, res) => {
+    res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` });
+  });
+}
 
 // ── Global error handler ──────────────────────────────────────
 // eslint-disable-next-line no-unused-vars
@@ -133,6 +149,5 @@ const server = app.listen(ENV.PORT, () => {
   console.log(`📡 Environment: ${ENV.NODE_ENV}`);
 });
 
-// Keep TCP connections alive — avoids reconnect overhead on every request
-server.keepAliveTimeout    = 65_000;  // slightly > typical LB idle timeout (60s)
-server.headersTimeout      = 66_000;  // must be > keepAliveTimeout
+server.keepAliveTimeout = 65_000;
+server.headersTimeout   = 66_000;
