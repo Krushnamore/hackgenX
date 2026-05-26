@@ -16,7 +16,7 @@ import {
   removeToken,
   clearCache,
 } from "@/lib/api";
-import { addNotification, getNotifications } from "@/hooks/useNotifications";
+import { addNotification } from "@/hooks/useNotifications";
 
 /* ================= TYPES ================= */
 
@@ -77,7 +77,6 @@ const ls = {
 };
 
 /* ================= RAW FETCH HELPER ================= */
-// Used for endpoints not covered by the api.ts wrappers (e.g. leaderboard)
 
 const BASE = (import.meta as any).env?.VITE_API_URL || "http://localhost:5000/api";
 
@@ -101,16 +100,22 @@ async function apiFetch(path: string, opts: RequestInit = {}) {
 /* ================= PROVIDER ================= */
 
 export const AppProvider = ({ children }: { children: ReactNode }) => {
+
+  // ── FIX 1: Restore user from localStorage immediately so no flicker ──
   const [currentUser, setCurrentUser] = useState<any | null>(() => {
-    try { return JSON.parse(localStorage.getItem(USER_KEY) || "null"); }
-    catch { return null; }
+    try {
+      const stored = localStorage.getItem(USER_KEY);
+      return stored ? JSON.parse(stored) : null;
+    } catch { return null; }
   });
 
   const [complaints,  setComplaints]  = useState<any[]>(() => ls.get<any[]>(COMPLAINTS_KEY)  || []);
   const [leaderboard, setLeaderboard] = useState<any[]>(() => ls.get<any[]>(LEADERBOARD_KEY) || []);
   const [globalTop3,  setGlobalTop3]  = useState<any[]>([]);
   const [users,       setUsers]       = useState<any[]>([]);
-  const [loading,     setLoading]     = useState(false);
+
+  // ── FIX 2: loading=true on mount so ProtectedRoute waits ──
+  const [loading, setLoading] = useState(true);
 
   const currentUserRef = useRef<any>(currentUser);
   useEffect(() => {
@@ -118,12 +123,48 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (currentUser) localStorage.setItem(USER_KEY, JSON.stringify(currentUser));
   }, [currentUser]);
 
-  // On mount: if user is already logged in (page refresh), reload data
+  // ── FIX 3: On mount, verify token is still valid ──
   useEffect(() => {
-    if (getToken()) {
-      loadComplaints();
-      loadUsers();
-    }
+    const init = async () => {
+      const token = getToken();
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+      try {
+        // Verify token with backend and get fresh user data
+        const data = await apiFetch('/auth/me');
+        const user = data?.user ?? data;
+        if (user) {
+          setCurrentUser(user);
+          localStorage.setItem(USER_KEY, JSON.stringify(user));
+          // Load data in background — don't block UI
+          loadComplaints();
+          loadUsers();
+        } else {
+          // Token invalid — clear everything
+          removeToken();
+          localStorage.removeItem(USER_KEY);
+          setCurrentUser(null);
+        }
+      } catch (err: any) {
+        const msg = String(err?.message || '').toLowerCase();
+        const isAuthError = msg.includes('401') || msg.includes('403') ||
+          msg.includes('unauthorized') || msg.includes('jwt') || msg.includes('token');
+
+        if (isAuthError) {
+          // Real auth error — log out
+          removeToken();
+          localStorage.removeItem(USER_KEY);
+          setCurrentUser(null);
+        }
+        // Network error — keep cached user, they'll see stale data
+        // but won't be logged out unexpectedly
+      } finally {
+        setLoading(false);
+      }
+    };
+    init();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ── COMPLAINTS ── */
@@ -132,7 +173,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     try {
       const res = await complaintAPI.getAll();
       if (res?.complaints) {
-        // Normalize _id → id so UI can always use c.id
         const normalized = res.complaints.map((c: any) => ({
           ...c,
           id: c.id || c._id?.toString(),
@@ -145,7 +185,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const refreshComplaints = useCallback(() => loadComplaints(), [loadComplaints]);
 
-  /* ── USERS (for admin dashboard citizens count) ── */
+  /* ── USERS ── */
 
   const loadUsers = useCallback(async () => {
     try {
@@ -161,34 +201,23 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     try {
       const params = new URLSearchParams({ limit: String(limit) });
       if (ward) params.set("ward", String(ward));
-
       const data = await apiFetch(`/users/leaderboard?${params}`);
-
-      // Backend returns { success, users, total }
       const list: any[] = data?.users ?? data?.leaderboard ?? (Array.isArray(data) ? data : []);
-
       setLeaderboard(list);
       ls.set(LEADERBOARD_KEY, list);
-
       if (!ward) {
-        // No ward filter → first 3 ARE the global top 3
         setGlobalTop3(list.slice(0, 3));
       } else {
-        // Fetch global top 3 separately (unfiltered, limit=3)
         try {
           const global = await apiFetch("/users/leaderboard?limit=3");
           const gList: any[] = global?.users ?? global?.leaderboard ?? (Array.isArray(global) ? global : []);
           setGlobalTop3(gList.slice(0, 3));
-        } catch {
-          // fallback: keep whatever globalTop3 already is
-        }
+        } catch {}
       }
-    } catch (err) {
-      console.warn("Failed loading leaderboard", err);
-    }
+    } catch (err) { console.warn("Failed loading leaderboard", err); }
   }, []);
 
-  /* ── REFRESH CURRENT USER (get fresh points/badge from server) ── */
+  /* ── REFRESH CURRENT USER ── */
 
   const refreshCurrentUser = useCallback(async () => {
     try {
@@ -198,9 +227,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         setCurrentUser(user);
         localStorage.setItem(USER_KEY, JSON.stringify(user));
       }
-    } catch (err) {
-      console.warn('Failed refreshing user', err);
-    }
+    } catch (err) { console.warn('Failed refreshing user', err); }
   }, []);
 
   /* ── LOGIN ── */
@@ -213,12 +240,18 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       ? await authAPI.adminLogin(email, password)
       : await authAPI.citizenLogin(email, password);
 
-    if (!result?.token) throw new Error("Login failed");
+    if (!result?.token) throw new Error("Login failed — no token received");
+
     setToken(result.token);
-    setCurrentUser(result.user);
-    await loadComplaints();
-    await loadUsers();
-    return result.user;
+    const user = result.user;
+    setCurrentUser(user);
+    localStorage.setItem(USER_KEY, JSON.stringify(user)); // ← persist immediately
+
+    // Load in background
+    loadComplaints();
+    loadUsers();
+
+    return user;
   };
 
   /* ── REGISTER ── */
@@ -230,10 +263,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       : await authAPI.citizenRegister(data);
 
     if (!result?.token) throw new Error("Registration failed");
+
     setToken(result.token);
-    setCurrentUser(result.user);
-    await loadComplaints();
-    return result.user;
+    const user = result.user;
+    setCurrentUser(user);
+    localStorage.setItem(USER_KEY, JSON.stringify(user)); // ← persist immediately
+
+    loadComplaints();
+    return user;
   };
 
   /* ── LOGOUT ── */
@@ -254,20 +291,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   /* ── ADD COMPLAINT ── */
 
   const addComplaint = useCallback(async (data: any) => {
-    // Try complaintAPI.create first, fall back to direct fetch
     let result: any;
     try {
       if (typeof (complaintAPI as any).create === 'function') {
         result = await (complaintAPI as any).create(data);
       } else {
-        result = await apiFetch('/complaints', {
-          method: 'POST',
-          body: JSON.stringify(data),
-        });
+        result = await apiFetch('/complaints', { method: 'POST', body: JSON.stringify(data) });
       }
-    } catch (err) {
-      throw err;
-    }
+    } catch (err) { throw err; }
+
     const newComplaint = result?.complaint ?? result;
     if (newComplaint) {
       const normalized = { ...newComplaint, id: newComplaint.id || newComplaint._id?.toString() };
@@ -276,10 +308,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         ls.set(COMPLAINTS_KEY, updated);
         return updated;
       });
-      // Refresh user so points/badge update immediately in UI
       refreshCurrentUser();
 
-      // 🔔 Notify citizen: points earned
       const citizenId = currentUserRef.current?._id || currentUserRef.current?.id;
       if (citizenId) {
         addNotification(citizenId, {
@@ -289,9 +319,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           link   : '/citizen/rewards',
         });
       }
-
-      // 🔔 Notify ALL admins: new complaint filed
-      // We store admin notifications under a shared key "admins"
       addNotification('admins', {
         type   : 'new_complaint',
         title  : '📋 New Complaint Filed',
@@ -299,7 +326,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         link   : '/admin/complaints',
         meta   : { complaintId: normalized.id },
       });
-
       return normalized;
     }
     return newComplaint;
@@ -308,15 +334,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   /* ── UPDATE STATUS ── */
 
   const updateComplaintStatus = useCallback(async (id: string, status: string) => {
-    // Use direct fetch to avoid dependency on complaintAPI.updateStatus existing
     try {
       if (typeof (complaintAPI as any).updateStatus === 'function') {
         await (complaintAPI as any).updateStatus(id, status);
       } else {
-        await apiFetch(`/complaints/${id}/status`, {
-          method: 'PATCH',
-          body: JSON.stringify({ status }),
-        });
+        await apiFetch(`/complaints/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
       }
     } catch (err) { throw err; }
     setComplaints(prev => {
@@ -356,9 +378,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         });
       }
     } catch (err) { throw err; }
-    // Find the complaint to get citizen info
-    const resolvedC = complaints.find((c: any) => c.id === id || c._id === id);
 
+    const resolvedC = complaints.find((c: any) => c.id === id || c._id === id);
     setComplaints(prev => {
       const updated = prev.map(c =>
         c.id === id || c._id === id
@@ -369,7 +390,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       return updated;
     });
 
-    // 🔔 Notify citizen: complaint resolved + points
     if (resolvedC) {
       const citizenId = resolvedC.citizenId?.toString?.() || resolvedC.citizenId;
       if (citizenId) {
@@ -382,15 +402,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         addNotification(citizenId, {
           type   : 'points_earned',
           title  : '🏆 +100 Points Earned!',
-          message: 'Your complaint was resolved! Check your rewards page to see your updated balance.',
+          message: 'Your complaint was resolved! Check your rewards page.',
           link   : '/citizen/rewards',
         });
       }
     }
-
-    // Refresh leaderboard so points update for citizen
     refreshLeaderboard();
-  }, [refreshLeaderboard]);
+  }, [refreshLeaderboard, complaints]);
 
   /* ── DERIVED ── */
 
