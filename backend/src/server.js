@@ -1,5 +1,5 @@
 /**
- * server.js — PERFORMANCE OPTIMIZED + SERVES REACT FRONTEND
+ * server.js — FIXED CORS + PERFORMANCE OPTIMIZED + SERVES REACT FRONTEND
  */
 
 import express     from 'express';
@@ -35,21 +35,44 @@ app.use(compression());
 
 // ── CORS ───────────────────────────────────────────────────────
 const allowedOrigins = [
+  'https://janvani-voice-of-people.vercel.app',  // ✅ production frontend
   'http://localhost:8080',
   'http://localhost:5173',
   'http://localhost:3000',
-  ENV.CLIENT_URL,
+  ENV.CLIENT_URL,                                 // ✅ from Render env var
 ].filter(Boolean);
 
-app.use(cors({
+console.log('[CORS] Allowed origins:', allowedOrigins);
+
+const corsOptions = {
   origin: (origin, callback) => {
+    // Allow requests with no origin (Postman, curl, mobile)
     if (!origin) return callback(null, true);
+
+    // Allow exact matches
     if (allowedOrigins.includes(origin)) return callback(null, true);
+
+    // Allow any Render subdomain (for internal testing)
     if (origin.endsWith('.onrender.com')) return callback(null, true);
-    callback(new Error(`CORS blocked: ${origin}`));
+
+    // Allow ALL Vercel preview deployments for this project
+    if (/^https:\/\/janvani-voice-of-people.*\.vercel\.app$/.test(origin)) {
+      return callback(null, true);
+    }
+
+    // Block everything else — return false, NOT throw (throw causes 500)
+    console.warn(`[CORS] Blocked origin: ${origin}`);
+    callback(null, false);
   },
-  credentials: true,
-}));
+  credentials    : true,
+  methods        : ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders : ['Content-Type', 'Authorization'],
+};
+
+app.use(cors(corsOptions));
+
+// ✅ Handle preflight OPTIONS requests for ALL routes
+app.options('*', cors(corsOptions));
 
 // ── Body parsing ───────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
@@ -58,7 +81,7 @@ app.use(express.urlencoded({ extended: true }));
 // ── Dev-only: Request timing + HTTP logging ────────────────────
 if (ENV.NODE_ENV === 'development') {
   app.use((req, res, next) => {
-    const start = Date.now();
+    const start    = Date.now();
     const origJson = res.json.bind(res);
     res.json = (body) => {
       console.debug(`[${req.method}] ${req.path} — ${Date.now() - start}ms`);
@@ -79,18 +102,14 @@ app.use('/api/complaints/stats', (req, res, next) => {
   next();
 });
 
-// ── API Routes ─────────────────────────────────────────────────
-app.use('/api/auth',       requireDb, authRoutes);
-app.use('/api/complaints', requireDb, complaintRoutes);
-app.use('/api/users',      requireDb, userRoutes);
-
 // ── Health check ───────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.json({
-    status : 'ok',
-    env    : ENV.NODE_ENV,
-    time   : new Date().toISOString(),
-    db     : {
+    success : true,
+    status  : 'ok',
+    env     : ENV.NODE_ENV,
+    time    : new Date().toISOString(),
+    db      : {
       connected  : mongoose.connection.readyState === 1,
       readyState : mongoose.connection.readyState,
       name       : mongoose.connection.name || null,
@@ -98,6 +117,11 @@ app.get('/api/health', (req, res) => {
     },
   });
 });
+
+// ── API Routes ─────────────────────────────────────────────────
+app.use('/api/auth',       requireDb, authRoutes);
+app.use('/api/complaints', requireDb, complaintRoutes);
+app.use('/api/users',      requireDb, userRoutes);
 
 // ── Serve React Frontend (PRODUCTION ONLY) ─────────────────────
 // ✅ Must come AFTER all /api routes
@@ -118,7 +142,10 @@ if (ENV.NODE_ENV === 'production') {
 // ── 404 (dev only) ─────────────────────────────────────────────
 if (ENV.NODE_ENV !== 'production') {
   app.use((req, res) => {
-    res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` });
+    res.status(404).json({
+      success : false,
+      message : `Route ${req.method} ${req.originalUrl} not found`,
+    });
   });
 }
 
@@ -126,7 +153,9 @@ if (ENV.NODE_ENV !== 'production') {
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   const status  = err.status || err.statusCode || 500;
-  const message = ENV.NODE_ENV === 'production' ? 'Server error' : (err.message || 'Server error');
+  const message = ENV.NODE_ENV === 'production'
+    ? 'Server error'
+    : (err.message || 'Server error');
   console.error(`[ERROR] ${status} — ${message}`);
   if (!res.headersSent) res.status(status).json({ success: false, message });
 });
