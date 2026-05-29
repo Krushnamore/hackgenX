@@ -61,9 +61,13 @@ export default function AdminLogin() {
         navigate('/citizen/dashboard');
       }
     } catch (err: any) {
+      // Show friendly message for pending accounts
+      const isPending = err.message?.toLowerCase().includes('pending') || err.message?.toLowerCase().includes('approval');
       toast({
-        title      : t('toasts.loginFailed'),
-        description: err.message || t('toasts.invalidCredentials'),
+        title      : isPending ? '⏳ Account Pending Approval' : t('toasts.loginFailed'),
+        description: isPending
+          ? 'Your account is awaiting approval by the Super Admin. Please try again after receiving approval.'
+          : (err.message || t('toasts.invalidCredentials')),
         variant    : 'destructive',
       });
     } finally {
@@ -77,7 +81,7 @@ export default function AdminLogin() {
     if (submitting) return;
     setSubmitting(true);
     try {
-      const u = await register({
+      const result = await register({
         role      : rRole,
         name      : rName,
         email     : rEmail,
@@ -88,9 +92,20 @@ export default function AdminLogin() {
         joinedDate: rJoined,
         createdAt : new Date().toISOString().split('T')[0],
       });
+
+      // dept_officer registration → pending approval (no token returned)
+      if (result?.pending) {
+        toast({
+          title      : '⏳ Registration Submitted',
+          description: 'Your account is pending approval by the Super Admin. You will be able to log in once approved.',
+        });
+        setTab('login'); // switch back to login tab
+        return;
+      }
+
       toast({
         title      : t('toasts.registrationSuccess'),
-        description: `Employee ID: ${u.employeeId} · Role: ${rRole === 'superAdmin' ? 'Super Admin' : 'Dept Officer'}`,
+        description: `Employee ID: ${result.employeeId} · Role: ${rRole === 'superAdmin' ? 'Super Admin' : 'Dept Officer'}`,
       });
       navigate('/admin/dashboard');
     } catch (err: any) {

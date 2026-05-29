@@ -2,10 +2,15 @@
  * backend/src/models/User.js
  *
  * Role enum supports two-tier admin hierarchy:
- *   'superAdmin'   → city-wide monitor, sees ALL complaints + dept filter bar
+ *   'superAdmin'   → city-wide monitor, sees ALL complaints
  *   'dept_officer' → sees ONLY complaints in their own department
  *   'admin'        → legacy role, behaves like dept_officer
  *   'citizen'      → public user who files complaints
+ *
+ * accountStatus:
+ *   'active'  → can login normally
+ *   'pending' → dept_officer registered, waiting for superAdmin approval
+ *   'rejected'→ registration rejected by superAdmin
  */
 
 import mongoose from 'mongoose';
@@ -18,6 +23,13 @@ const userSchema = new mongoose.Schema(
       type    : String,
       enum    : ['citizen', 'admin', 'superAdmin', 'dept_officer'],
       required: true,
+    },
+
+    // ── Account Status (for admin approval flow) ─────────────────
+    accountStatus: {
+      type    : String,
+      enum    : ['active', 'pending', 'rejected'],
+      default : 'active',
     },
 
     // ── Common fields ────────────────────────────────────────────
@@ -40,8 +52,6 @@ const userSchema = new mongoose.Schema(
     avatar              : { type: String, default: null },
 
     // ── Admin / Officer fields ────────────────────────────────────
-    // department: the department this officer manages.
-    // superAdmin gets 'All Departments' automatically.
     department : { type: String, default: '' },
     post       : { type: String, default: '' },
     employeeId : { type: String, default: '' },
@@ -72,8 +82,8 @@ userSchema.methods.matchPassword = async function (entered) {
 };
 
 // ── Indexes ───────────────────────────────────────────────────
-// NOTE: email index is created automatically by unique:true above — no need to repeat it here
 userSchema.index({ role: 1 });
+userSchema.index({ accountStatus: 1 });
 userSchema.index({ department: 1 }, { sparse: true });
 
 export const User = mongoose.model('User', userSchema);

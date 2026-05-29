@@ -1,43 +1,44 @@
 import {
-  createContext,
-  useContext,
-  useState,
-  useEffect,
-  useCallback,
-  useRef,
-  useMemo,
-  ReactNode,
+  createContext, useContext, useState, useEffect,
+  useCallback, useRef, useMemo, ReactNode,
 } from "react";
 import {
-  authAPI,
-  complaintAPI,
-  getToken,
-  setToken,
-  removeToken,
-  clearCache,
+  authAPI, complaintAPI,
+  getToken, setToken, removeToken, clearCache,
 } from "@/lib/api";
-import { addNotification } from "@/hooks/useNotifications";
+import {
+  addNotification,
+  notifyNewComplaint,
+  notifyStatusChange,
+  notifyResolved,
+  notifyDocumentSent,
+  notifyAdminRegistrationPending,
+  deptKey,
+} from "@/hooks/useNotifications";
 
 /* ================= TYPES ================= */
 
 interface AppContextType {
-  currentUser: any | null;
-  complaints: any[];
-  users: any[];
-  loading: boolean;
-  login: (email: string, password: string, role?: "citizen" | "admin") => Promise<any>;
-  register: (data: any) => Promise<any>;
-  logout: () => void;
-  refreshComplaints: () => Promise<void>;
-  refreshCurrentUser: () => Promise<void>;
-  myComplaints: any[];
+  currentUser          : any | null;
+  complaints           : any[];
+  users                : any[];
+  loading              : boolean;
+  login                : (email: string, password: string, role?: "citizen" | "admin") => Promise<any>;
+  register             : (data: any) => Promise<any>;
+  logout               : () => void;
+  refreshComplaints    : () => Promise<void>;
+  refreshCurrentUser   : () => Promise<void>;
+  myComplaints         : any[];
+  addComplaint         : (data: any) => Promise<any>;
   updateComplaintStatus: (id: string, status: string) => Promise<void>;
-  deleteComplaint: (id: string) => Promise<void>;
-  resolveComplaint: (id: string, photo?: string, note?: string, officer?: string) => Promise<void>;
-  addComplaint: (data: any) => Promise<any>;
-  leaderboard: any[];
-  globalTop3: any[];
-  refreshLeaderboard: (ward?: number, limit?: number) => Promise<void>;
+  deleteComplaint      : (id: string) => Promise<void>;
+  resolveComplaint     : (id: string, photo?: string, note?: string, officer?: string) => Promise<void>;
+  sendDocument         : (citizenId: string, documentName: string, complaintId?: string) => void;
+  leaderboard          : any[];
+  globalTop3           : any[];
+  refreshLeaderboard   : (ward?: number, limit?: number) => Promise<void>;
+  getPendingAdmins     : () => Promise<any[]>;
+  approveAdmin         : (id: string, action: "approve" | "reject") => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -76,7 +77,7 @@ const ls = {
   },
 };
 
-/* ================= RAW FETCH HELPER ================= */
+/* ================= FETCH HELPER ================= */
 
 const BASE = (import.meta as any).env?.VITE_API_URL || "http://localhost:5000/api";
 
@@ -90,32 +91,30 @@ async function apiFetch(path: string, opts: RequestInit = {}) {
       ...(opts.headers || {}),
     },
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.message || `Request failed: ${res.status}`);
-  }
-  return res.json();
+  if (res.status === 204) return { success: true };
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || `Request failed: ${res.status}`);
+  return data;
 }
+
+const normalize = (c: any) => ({
+  ...c,
+  id: c.id || c._id?.toString?.() || String(c._id),
+});
 
 /* ================= PROVIDER ================= */
 
 export const AppProvider = ({ children }: { children: ReactNode }) => {
 
-  // ── FIX 1: Restore user from localStorage immediately so no flicker ──
   const [currentUser, setCurrentUser] = useState<any | null>(() => {
-    try {
-      const stored = localStorage.getItem(USER_KEY);
-      return stored ? JSON.parse(stored) : null;
-    } catch { return null; }
+    try { const s = localStorage.getItem(USER_KEY); return s ? JSON.parse(s) : null; }
+    catch { return null; }
   });
-
-  const [complaints,  setComplaints]  = useState<any[]>(() => ls.get<any[]>(COMPLAINTS_KEY)  || []);
-  const [leaderboard, setLeaderboard] = useState<any[]>(() => ls.get<any[]>(LEADERBOARD_KEY) || []);
+  const [complaints,  setComplaints]  = useState<any[]>(() => ls.get<any[]>(COMPLAINTS_KEY)  ?? []);
+  const [leaderboard, setLeaderboard] = useState<any[]>(() => ls.get<any[]>(LEADERBOARD_KEY) ?? []);
   const [globalTop3,  setGlobalTop3]  = useState<any[]>([]);
   const [users,       setUsers]       = useState<any[]>([]);
-
-  // ── FIX 2: loading=true on mount so ProtectedRoute waits ──
-  const [loading, setLoading] = useState(true);
+  const [loading,     setLoading]     = useState(true);
 
   const currentUserRef = useRef<any>(currentUser);
   useEffect(() => {
@@ -123,64 +122,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (currentUser) localStorage.setItem(USER_KEY, JSON.stringify(currentUser));
   }, [currentUser]);
 
-  // ── FIX 3: On mount, verify token is still valid ──
-  useEffect(() => {
-    const init = async () => {
-      const token = getToken();
-      if (!token) {
-        setLoading(false);
-        return;
-      }
-      try {
-        // Verify token with backend and get fresh user data
-        const data = await apiFetch('/auth/me');
-        const user = data?.user ?? data;
-        if (user) {
-          setCurrentUser(user);
-          localStorage.setItem(USER_KEY, JSON.stringify(user));
-          // Load data in background — don't block UI
-          loadComplaints();
-          loadUsers();
-        } else {
-          // Token invalid — clear everything
-          removeToken();
-          localStorage.removeItem(USER_KEY);
-          setCurrentUser(null);
-        }
-      } catch (err: any) {
-        const msg = String(err?.message || '').toLowerCase();
-        const isAuthError = msg.includes('401') || msg.includes('403') ||
-          msg.includes('unauthorized') || msg.includes('jwt') || msg.includes('token');
-
-        if (isAuthError) {
-          // Real auth error — log out
-          removeToken();
-          localStorage.removeItem(USER_KEY);
-          setCurrentUser(null);
-        }
-        // Network error — keep cached user, they'll see stale data
-        // but won't be logged out unexpectedly
-      } finally {
-        setLoading(false);
-      }
-    };
-    init();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
   /* ── COMPLAINTS ── */
 
   const loadComplaints = useCallback(async () => {
     try {
       const res = await complaintAPI.getAll();
       if (res?.complaints) {
-        const normalized = res.complaints.map((c: any) => ({
-          ...c,
-          id: c.id || c._id?.toString(),
-        }));
+        const normalized = res.complaints.map(normalize);
         setComplaints(normalized);
         ls.set(COMPLAINTS_KEY, normalized);
       }
-    } catch (err) { console.warn("Failed loading complaints", err); }
+    } catch (err) { console.warn("loadComplaints failed", err); }
   }, []);
 
   const refreshComplaints = useCallback(() => loadComplaints(), [loadComplaints]);
@@ -189,10 +141,60 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const loadUsers = useCallback(async () => {
     try {
-      const data = await apiFetch('/users/leaderboard?limit=500');
+      const data = await apiFetch("/users/leaderboard?limit=500");
       const list: any[] = data?.users ?? data?.leaderboard ?? (Array.isArray(data) ? data : []);
       setUsers(list);
-    } catch (err) { console.warn('Failed loading users', err); }
+    } catch (err) { console.warn("loadUsers failed", err); }
+  }, []);
+
+  /* ── BOOTSTRAP ── */
+
+  useEffect(() => {
+    let cancelled = false;
+    const init = async () => {
+      const token = getToken();
+      if (!token) { if (!cancelled) setLoading(false); return; }
+      try {
+        const data = await apiFetch("/auth/me");
+        const user = data?.user ?? data;
+        if (!cancelled) {
+          if (user?._id || user?.id) {
+            setCurrentUser(user);
+            localStorage.setItem(USER_KEY, JSON.stringify(user));
+            loadComplaints();
+            loadUsers();
+          } else {
+            removeToken();
+            localStorage.removeItem(USER_KEY);
+            setCurrentUser(null);
+          }
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          const msg = String(err?.message ?? "").toLowerCase();
+          if (msg.includes("401") || msg.includes("403") ||
+              msg.includes("unauthorized") || msg.includes("jwt") || msg.includes("token")) {
+            removeToken();
+            localStorage.removeItem(USER_KEY);
+            setCurrentUser(null);
+          }
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    init();
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── REFRESH CURRENT USER ── */
+
+  const refreshCurrentUser = useCallback(async () => {
+    try {
+      const data = await apiFetch("/auth/me");
+      const user = data?.user ?? data;
+      if (user) { setCurrentUser(user); localStorage.setItem(USER_KEY, JSON.stringify(user)); }
+    } catch (err) { console.warn("refreshCurrentUser failed", err); }
   }, []);
 
   /* ── LEADERBOARD ── */
@@ -214,68 +216,58 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           setGlobalTop3(gList.slice(0, 3));
         } catch {}
       }
-    } catch (err) { console.warn("Failed loading leaderboard", err); }
-  }, []);
-
-  /* ── REFRESH CURRENT USER ── */
-
-  const refreshCurrentUser = useCallback(async () => {
-    try {
-      const data = await apiFetch('/auth/me');
-      const user = data?.user ?? data;
-      if (user) {
-        setCurrentUser(user);
-        localStorage.setItem(USER_KEY, JSON.stringify(user));
-      }
-    } catch (err) { console.warn('Failed refreshing user', err); }
+    } catch (err) { console.warn("refreshLeaderboard failed", err); }
   }, []);
 
   /* ── LOGIN ── */
 
-  const login = async (email: string, password: string, role?: "citizen" | "admin") => {
+  const login = useCallback(async (email: string, password: string, role?: "citizen" | "admin") => {
     clearCache();
     ls.remove(COMPLAINTS_KEY);
-
     const result = role === "admin"
       ? await authAPI.adminLogin(email, password)
       : await authAPI.citizenLogin(email, password);
-
     if (!result?.token) throw new Error("Login failed — no token received");
-
     setToken(result.token);
     const user = result.user;
     setCurrentUser(user);
-    localStorage.setItem(USER_KEY, JSON.stringify(user)); // ← persist immediately
-
-    // Load in background
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
     loadComplaints();
     loadUsers();
-
     return user;
-  };
+  }, [loadComplaints, loadUsers]);
 
   /* ── REGISTER ── */
 
-  const register = async (data: any) => {
+  const register = useCallback(async (data: any) => {
     const adminRoles = ["admin", "dept_officer", "superAdmin"];
     const result = adminRoles.includes(data.role)
       ? await authAPI.adminRegister(data)
       : await authAPI.citizenRegister(data);
 
-    if (!result?.token) throw new Error("Registration failed");
+    // Department admin / officer pending approval — notify superadmin
+    if (result?.pending) {
+      notifyAdminRegistrationPending({
+        name      : data.name,
+        department: data.department,
+        email     : data.email,
+        userId    : result?.userId ?? result?.user?._id,
+      });
+      return result;
+    }
 
+    if (!result?.token) throw new Error("Registration failed");
     setToken(result.token);
     const user = result.user;
     setCurrentUser(user);
-    localStorage.setItem(USER_KEY, JSON.stringify(user)); // ← persist immediately
-
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
     loadComplaints();
     return user;
-  };
+  }, [loadComplaints]);
 
   /* ── LOGOUT ── */
 
-  const logout = () => {
+  const logout = useCallback(() => {
     clearCache();
     removeToken();
     localStorage.removeItem(USER_KEY);
@@ -286,63 +278,74 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setLeaderboard([]);
     setGlobalTop3([]);
     setUsers([]);
-  };
+  }, []);
 
   /* ── ADD COMPLAINT ── */
 
   const addComplaint = useCallback(async (data: any) => {
-    let result: any;
-    try {
-      if (typeof (complaintAPI as any).create === 'function') {
-        result = await (complaintAPI as any).create(data);
-      } else {
-        result = await apiFetch('/complaints', { method: 'POST', body: JSON.stringify(data) });
-      }
-    } catch (err) { throw err; }
+    const result =
+      typeof (complaintAPI as any).create === "function"
+        ? await (complaintAPI as any).create(data)
+        : await apiFetch("/complaints", { method: "POST", body: JSON.stringify(data) });
 
-    const newComplaint = result?.complaint ?? result;
-    if (newComplaint) {
-      const normalized = { ...newComplaint, id: newComplaint.id || newComplaint._id?.toString() };
+    const newC = result?.complaint ?? result;
+    if (newC) {
+      const norm = normalize(newC);
       setComplaints(prev => {
-        const updated = [normalized, ...prev];
+        const updated = [norm, ...prev];
         ls.set(COMPLAINTS_KEY, updated);
         return updated;
       });
       refreshCurrentUser();
 
+      // Citizen: points earned
       const citizenId = currentUserRef.current?._id || currentUserRef.current?.id;
       if (citizenId) {
         addNotification(citizenId, {
-          type   : 'points_earned',
-          title  : '🏆 +50 Points Earned!',
-          message: `Your complaint ${normalized.title} was submitted. You earned 50 points!`,
-          link   : '/citizen/rewards',
+          type   : "points_earned",
+          title  : "🏆 +50 Points Earned!",
+          message: `Your complaint "${norm.title}" was submitted. You earned 50 points!`,
+          link   : "/citizen/rewards",
         });
       }
-      addNotification('admins', {
-        type   : 'new_complaint',
-        title  : '📋 New Complaint Filed',
-        message: `${normalized.title} — ${normalized.category}, Zone ${normalized.ward} by ${normalized.citizenName || currentUserRef.current?.name}`,
-        link   : '/admin/complaints',
-        meta   : { complaintId: normalized.id },
+
+      // Department admin + generic admins channel
+      notifyNewComplaint({
+        id         : norm.id,
+        complaintId: norm.complaintId,
+        title      : norm.title,
+        category   : norm.category,
+        ward       : norm.ward,
+        department : norm.department,       // complaint's assigned department
+        citizenName: norm.citizenName ?? currentUserRef.current?.name,
       });
-      return normalized;
+
+      return norm;
     }
-    return newComplaint;
+    return newC;
   }, [refreshCurrentUser]);
 
   /* ── UPDATE STATUS ── */
 
   const updateComplaintStatus = useCallback(async (id: string, status: string) => {
-    try {
-      if (typeof (complaintAPI as any).updateStatus === 'function') {
-        await (complaintAPI as any).updateStatus(id, status);
-      } else {
-        await apiFetch(`/complaints/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
-      }
-    } catch (err) { throw err; }
+    typeof (complaintAPI as any).updateStatus === "function"
+      ? await (complaintAPI as any).updateStatus(id, status)
+      : await apiFetch(`/complaints/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
+
     setComplaints(prev => {
-      const updated = prev.map(c => c.id === id || c._id === id ? { ...c, status } : c);
+      const complaint = prev.find(c => c.id === id || c._id === id);
+      if (complaint) {
+        const citizenId = complaint.citizenId?.toString?.() || complaint.citizenId;
+        if (citizenId) {
+          notifyStatusChange({
+            citizenId,
+            title  : complaint.title,
+            status,
+            trackId: complaint.complaintId || id,
+          });
+        }
+      }
+      const updated = prev.map(c => (c.id === id || c._id === id) ? { ...c, status } : c);
       ls.set(COMPLAINTS_KEY, updated);
       return updated;
     });
@@ -351,13 +354,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   /* ── DELETE ── */
 
   const deleteComplaint = useCallback(async (id: string) => {
-    try {
-      if (typeof (complaintAPI as any).delete === 'function') {
-        await (complaintAPI as any).delete(id);
-      } else {
-        await apiFetch(`/complaints/${id}`, { method: 'DELETE' });
-      }
-    } catch (err) { throw err; }
+    typeof (complaintAPI as any).delete === "function"
+      ? await (complaintAPI as any).delete(id)
+      : await apiFetch(`/complaints/${id}`, { method: "DELETE" });
     setComplaints(prev => {
       const updated = prev.filter(c => c.id !== id && c._id !== id);
       ls.set(COMPLAINTS_KEY, updated);
@@ -367,67 +366,135 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   /* ── RESOLVE ── */
 
-  const resolveComplaint = useCallback(async (id: string, photo?: string, note?: string, officer?: string) => {
-    try {
-      if (typeof (complaintAPI as any).resolve === 'function') {
-        await (complaintAPI as any).resolve(id, { resolvePhoto: photo, adminNote: note, assignedOfficer: officer });
-      } else {
-        await apiFetch(`/complaints/${id}/resolve`, {
-          method: 'POST',
-          body: JSON.stringify({ resolvePhoto: photo, adminNote: note, assignedOfficer: officer }),
+  const resolveComplaint = useCallback(async (
+    id: string, photo?: string, note?: string, officer?: string,
+  ) => {
+    typeof (complaintAPI as any).resolve === "function"
+      ? await (complaintAPI as any).resolve(id, { resolvePhoto: photo, adminNote: note, assignedOfficer: officer })
+      : await apiFetch(`/complaints/${id}/resolve`, {
+          method: "POST",
+          body  : JSON.stringify({ resolvePhoto: photo, adminNote: note, assignedOfficer: officer }),
         });
-      }
-    } catch (err) { throw err; }
 
-    const resolvedC = complaints.find((c: any) => c.id === id || c._id === id);
     setComplaints(prev => {
+      const resolvedC = prev.find(c => c.id === id || c._id === id);
+      if (resolvedC) {
+        const citizenId = resolvedC.citizenId?.toString?.() || resolvedC.citizenId;
+        if (citizenId) {
+          notifyResolved({
+            citizenId,
+            title      : resolvedC.title,
+            trackId    : resolvedC.complaintId || id,
+            officer,
+            department : resolvedC.department,
+            resolvedBy : currentUserRef.current?.name,
+          });
+        }
+      }
       const updated = prev.map(c =>
         c.id === id || c._id === id
-          ? { ...c, status: 'Resolved', resolvePhoto: photo, adminNote: note, assignedOfficer: officer }
-          : c
+          ? { ...c, status: "Resolved", resolvePhoto: photo, adminNote: note, assignedOfficer: officer }
+          : c,
       );
       ls.set(COMPLAINTS_KEY, updated);
       return updated;
     });
 
-    if (resolvedC) {
-      const citizenId = resolvedC.citizenId?.toString?.() || resolvedC.citizenId;
-      if (citizenId) {
-        addNotification(citizenId, {
-          type   : 'resolved',
-          title  : '✅ Your Complaint Was Resolved!',
-          message: `${resolvedC.title} has been resolved by ${officer || 'Municipal Officer'}. You earned +100 points!`,
-          link   : `/citizen/track?id=${resolvedC.complaintId || id}`,
-        });
-        addNotification(citizenId, {
-          type   : 'points_earned',
-          title  : '🏆 +100 Points Earned!',
-          message: 'Your complaint was resolved! Check your rewards page.',
-          link   : '/citizen/rewards',
-        });
-      }
-    }
     refreshLeaderboard();
-  }, [refreshLeaderboard, complaints]);
+  }, [refreshLeaderboard]);
+
+  /* ── SEND DOCUMENT TO CITIZEN ── */
+
+  const sendDocument = useCallback((
+    citizenId: string,
+    documentName: string,
+    complaintId?: string,
+  ) => {
+    notifyDocumentSent({
+      citizenId,
+      documentName,
+      complaintId,
+      sentBy: currentUserRef.current?.name,
+    });
+  }, []);
+
+  /* ── ADMIN APPROVAL ── */
+
+  const getPendingAdmins = useCallback(async (): Promise<any[]> => {
+    try {
+      const data = await apiFetch("/auth/pending-admins");
+      return data?.pending ?? [];
+    } catch { return []; }
+  }, []);
+
+  const approveAdmin = useCallback(async (id: string, action: "approve" | "reject") => {
+    const data = await apiFetch(`/auth/approve-admin/${id}`, {
+      method: "PATCH",
+      body  : JSON.stringify({ action }),
+    });
+    const adminUser = data?.user;
+    if (adminUser) {
+      const notifKey = adminUser._id || adminUser.id;
+
+      // Notify the admin themselves
+      addNotification(notifKey, {
+        type   : "status_change",
+        title  : action === "approve" ? "✅ Account Approved!" : "❌ Account Rejected",
+        message: action === "approve"
+          ? "Your account has been approved. You can now log in."
+          : "Your registration was rejected. Contact the Super Admin.",
+        link: "/admin/login",
+      });
+
+      // Notify the department channel
+      addNotification(deptKey(adminUser.department), {
+        type   : "status_change",
+        title  : action === "approve" ? "✅ New Admin Joined" : "❌ Admin Registration Rejected",
+        message: `${adminUser.name} has been ${action === "approve" ? "approved" : "rejected"} for the ${adminUser.department} department.`,
+        link   : "/admin/settings",
+      });
+
+      // Notify superadmin
+      addNotification("superadmin", {
+        type   : "status_change",
+        title  : action === "approve" ? "✅ Admin Approved" : "❌ Admin Rejected",
+        message: `${adminUser.name} (${adminUser.department}) has been ${action === "approve" ? "approved" : "rejected"}.`,
+        link   : "/admin/settings",
+      });
+    }
+  }, []);
 
   /* ── DERIVED ── */
 
   const myComplaints = useMemo(() => {
     if (!currentUser) return [];
-    return complaints.filter(c =>
-      c.citizenId === currentUser._id || c.citizenId === currentUser.id
+    return complaints.filter(
+      c => c.citizenId === currentUser._id || c.citizenId === currentUser.id,
     );
   }, [complaints, currentUser]);
 
+  /* ── MEMOIZED CONTEXT VALUE ── */
+
+  const value = useMemo<AppContextType>(() => ({
+    currentUser, complaints, users, loading,
+    login, register, logout,
+    refreshComplaints, refreshCurrentUser, myComplaints,
+    addComplaint, updateComplaintStatus, deleteComplaint, resolveComplaint,
+    sendDocument,
+    leaderboard, globalTop3, refreshLeaderboard,
+    getPendingAdmins, approveAdmin,
+  }), [
+    currentUser, complaints, users, loading,
+    login, register, logout,
+    refreshComplaints, refreshCurrentUser, myComplaints,
+    addComplaint, updateComplaintStatus, deleteComplaint, resolveComplaint,
+    sendDocument,
+    leaderboard, globalTop3, refreshLeaderboard,
+    getPendingAdmins, approveAdmin,
+  ]);
+
   return (
-    <AppContext.Provider value={{
-      currentUser, complaints, users, loading,
-      login, register, logout,
-      refreshComplaints, refreshCurrentUser, myComplaints,
-      addComplaint,
-      updateComplaintStatus, deleteComplaint, resolveComplaint,
-      leaderboard, globalTop3, refreshLeaderboard,
-    }}>
+    <AppContext.Provider value={value}>
       {children}
     </AppContext.Provider>
   );
