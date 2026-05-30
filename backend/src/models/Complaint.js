@@ -62,6 +62,8 @@ const complaintSchema = new mongoose.Schema(
 
     photo        : { type: String, default: '' },
     resolvePhoto : { type: String, default: '' },
+    beforePhoto  : { type: String, default: '' },
+    resolveDate  : { type: Date },
 
     adminNote       : { type: String, default: '' },
     assignedOfficer : { type: String, default: '' },

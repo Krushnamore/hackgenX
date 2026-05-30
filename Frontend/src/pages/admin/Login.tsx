@@ -62,12 +62,15 @@ export default function AdminLogin() {
       }
     } catch (err: any) {
       // Show friendly message for pending accounts
-      const isPending = err.message?.toLowerCase().includes('pending') || err.message?.toLowerCase().includes('approval');
+      const isPending    = err.message?.toLowerCase().includes('pending') || err.message?.toLowerCase().includes('approval');
+      const isSuperEmail = err.message?.toLowerCase().includes('superadmin');
       toast({
-        title      : isPending ? '⏳ Account Pending Approval' : t('toasts.loginFailed'),
-        description: isPending
-          ? 'Your account is awaiting approval by the Super Admin. Please try again after receiving approval.'
-          : (err.message || t('toasts.invalidCredentials')),
+        title      : isPending    ? '⏳ Account Pending Approval'
+                   : isSuperEmail ? '🔒 Invalid Super Admin Email'
+                   : t('toasts.loginFailed'),
+        description: isPending    ? 'Your account is awaiting Super Admin approval.'
+                   : isSuperEmail ? 'Super Admin login requires an email with "superadmin" e.g. superadmin@gmail.com'
+                   : (err.message || t('toasts.invalidCredentials')),
         variant    : 'destructive',
       });
     } finally {
@@ -79,6 +82,16 @@ export default function AdminLogin() {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitting) return;
+    // Validate superAdmin email before submitting
+    if (rRole === 'superAdmin' && !rEmail.toLowerCase().includes('superadmin')) {
+      toast({
+        title      : '🔒 Invalid Email for Super Admin',
+        description: 'Super Admin email must contain "superadmin" e.g. superadmin@gmail.com',
+        variant    : 'destructive',
+      });
+      return;
+    }
+
     setSubmitting(true);
     try {
       const result = await register({
@@ -252,8 +265,21 @@ export default function AdminLogin() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <Label>{t('auth.email')}</Label>
-                  <Input type="email" value={rEmail} onChange={e => setREmail(e.target.value)} required />
+                  <Label>
+                    {t('auth.email')}
+                    {rRole === 'superAdmin' && (
+                      <span className="ml-1 text-[10px] text-orange-500 font-normal">must contain "superadmin"</span>
+                    )}
+                  </Label>
+                  <Input
+                    type="email" value={rEmail} onChange={e => setREmail(e.target.value)} required
+                    placeholder={rRole === 'superAdmin' ? 'superadmin@gmail.com' : 'officer@dept.in'}
+                    className={rRole === 'superAdmin' && rEmail && !rEmail.toLowerCase().includes('superadmin')
+                      ? 'border-red-400 focus:ring-red-400' : ''}
+                  />
+                  {rRole === 'superAdmin' && rEmail && !rEmail.toLowerCase().includes('superadmin') && (
+                    <p className="text-xs text-red-500 mt-1">Email must contain "superadmin"</p>
+                  )}
                 </div>
                 <div>
                   <Label>{t('auth.phone')}</Label>

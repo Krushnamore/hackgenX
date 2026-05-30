@@ -67,6 +67,13 @@ export const registerAdmin = async (req, res) => {
     if (role !== 'superAdmin' && !department)
       return res.status(400).json({ success: false, message: 'Department is required for department officers' });
 
+    // SuperAdmin must register with email containing 'superadmin'
+    if (role === 'superAdmin' && !email.toLowerCase().includes('superadmin'))
+      return res.status(400).json({
+        success: false,
+        message: 'Super Admin account requires an email containing "superadmin" (e.g. superadmin@gmail.com).',
+      });
+
     if (await User.findOne({ email }))
       return res.status(409).json({ success: false, message: 'Email already registered' });
 
@@ -103,6 +110,7 @@ export const registerAdmin = async (req, res) => {
 
 // POST /api/auth/admin/login
 // Blocks pending accounts
+// SuperAdmin login requires email containing 'superadmin'
 export const loginAdmin = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -112,6 +120,14 @@ export const loginAdmin = async (req, res) => {
     const user = await User.findOne({ email, role: { $in: ['admin', 'superAdmin', 'dept_officer'] } });
     if (!user || !(await user.matchPassword(password)))
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
+
+    // SuperAdmin must use an email containing 'superadmin'
+    if (user.role === 'superAdmin' && !email.toLowerCase().includes('superadmin')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Super Admin login requires an email containing "superadmin" (e.g. superadmin@gmail.com).',
+      });
+    }
 
     // Block pending accounts
     if (user.accountStatus === 'pending') {

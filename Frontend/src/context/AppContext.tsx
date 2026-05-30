@@ -16,8 +16,7 @@ import {
   deptKey,
 } from "@/hooks/useNotifications";
 
-/* ================= TYPES ================= */
-
+/* ─── TYPES ─────────────────────────────────────────────── */
 interface AppContextType {
   currentUser          : any | null;
   complaints           : any[];
@@ -49,8 +48,7 @@ export const useApp = () => {
   return ctx;
 };
 
-/* ================= LOCAL STORAGE ================= */
-
+/* ─── STORAGE ───────────────────────────────────────────── */
 const USER_KEY        = "jv_user";
 const COMPLAINTS_KEY  = "jv_complaints";
 const LEADERBOARD_KEY = "jv_leaderboard";
@@ -63,10 +61,10 @@ const ls = {
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       if (parsed?.__ts && Date.now() - parsed.__ts > CACHE_MAX_AGE) {
-        localStorage.removeItem(key);
-        return null;
+        localStorage.removeItem(key); return null;
       }
-      return parsed?.data ?? parsed;
+      const data = parsed?.data ?? parsed;
+      return Array.isArray(data) ? data as T : null;
     } catch { return null; }
   },
   set(key: string, data: any) {
@@ -77,8 +75,7 @@ const ls = {
   },
 };
 
-/* ================= FETCH HELPER ================= */
-
+/* ─── FETCH ─────────────────────────────────────────────── */
 const BASE = (import.meta as any).env?.VITE_API_URL || "http://localhost:5000/api";
 
 async function apiFetch(path: string, opts: RequestInit = {}) {
@@ -102,8 +99,7 @@ const normalize = (c: any) => ({
   id: c.id || c._id?.toString?.() || String(c._id),
 });
 
-/* ================= PROVIDER ================= */
-
+/* ─── PROVIDER ──────────────────────────────────────────── */
 export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const [currentUser, setCurrentUser] = useState<any | null>(() => {
@@ -123,22 +119,19 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [currentUser]);
 
   /* ── COMPLAINTS ── */
-
   const loadComplaints = useCallback(async () => {
     try {
       const res = await complaintAPI.getAll();
-      if (res?.complaints) {
-        const normalized = res.complaints.map(normalize);
-        setComplaints(normalized);
-        ls.set(COMPLAINTS_KEY, normalized);
-      }
+      const raw = res?.complaints ?? res?.data ?? (Array.isArray(res) ? res : []);
+      const normalized = Array.isArray(raw) ? raw.map(normalize) : [];
+      setComplaints(normalized);
+      ls.set(COMPLAINTS_KEY, normalized);
     } catch (err) { console.warn("loadComplaints failed", err); }
   }, []);
 
   const refreshComplaints = useCallback(() => loadComplaints(), [loadComplaints]);
 
   /* ── USERS ── */
-
   const loadUsers = useCallback(async () => {
     try {
       const data = await apiFetch("/users/leaderboard?limit=500");
@@ -148,7 +141,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   /* ── BOOTSTRAP ── */
-
   useEffect(() => {
     let cancelled = false;
     const init = async () => {
@@ -164,19 +156,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             loadComplaints();
             loadUsers();
           } else {
-            removeToken();
-            localStorage.removeItem(USER_KEY);
-            setCurrentUser(null);
+            removeToken(); localStorage.removeItem(USER_KEY); setCurrentUser(null);
           }
         }
       } catch (err: any) {
         if (!cancelled) {
           const msg = String(err?.message ?? "").toLowerCase();
-          if (msg.includes("401") || msg.includes("403") ||
-              msg.includes("unauthorized") || msg.includes("jwt") || msg.includes("token")) {
-            removeToken();
-            localStorage.removeItem(USER_KEY);
-            setCurrentUser(null);
+          if (msg.includes("401") || msg.includes("403") || msg.includes("unauthorized") || msg.includes("jwt") || msg.includes("token")) {
+            removeToken(); localStorage.removeItem(USER_KEY); setCurrentUser(null);
           }
         }
       } finally {
@@ -188,7 +175,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ── REFRESH CURRENT USER ── */
-
   const refreshCurrentUser = useCallback(async () => {
     try {
       const data = await apiFetch("/auth/me");
@@ -198,7 +184,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   /* ── LEADERBOARD ── */
-
   const refreshLeaderboard = useCallback(async (ward?: number, limit = 100) => {
     try {
       const params = new URLSearchParams({ limit: String(limit) });
@@ -220,32 +205,30 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   /* ── LOGIN ── */
-
   const login = useCallback(async (email: string, password: string, role?: "citizen" | "admin") => {
     clearCache();
     ls.remove(COMPLAINTS_KEY);
     const result = role === "admin"
       ? await authAPI.adminLogin(email, password)
       : await authAPI.citizenLogin(email, password);
-    if (!result?.token) throw new Error("Login failed — no token received");
+    if (!result?.token) throw new Error(result?.message || "Login failed — no token received");
     setToken(result.token);
     const user = result.user;
     setCurrentUser(user);
     localStorage.setItem(USER_KEY, JSON.stringify(user));
     loadComplaints();
     loadUsers();
+
     return user;
   }, [loadComplaints, loadUsers]);
 
   /* ── REGISTER ── */
-
   const register = useCallback(async (data: any) => {
     const adminRoles = ["admin", "dept_officer", "superAdmin"];
     const result = adminRoles.includes(data.role)
       ? await authAPI.adminRegister(data)
       : await authAPI.citizenRegister(data);
 
-    // Department admin / officer pending approval — notify superadmin
     if (result?.pending) {
       notifyAdminRegistrationPending({
         name      : data.name,
@@ -258,7 +241,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     if (!result?.token) throw new Error("Registration failed");
     setToken(result.token);
-    const user = result.user;
+    const user = result.user ?? result;
     setCurrentUser(user);
     localStorage.setItem(USER_KEY, JSON.stringify(user));
     loadComplaints();
@@ -266,7 +249,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [loadComplaints]);
 
   /* ── LOGOUT ── */
-
   const logout = useCallback(() => {
     clearCache();
     removeToken();
@@ -281,7 +263,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   /* ── ADD COMPLAINT ── */
-
   const addComplaint = useCallback(async (data: any) => {
     const result =
       typeof (complaintAPI as any).create === "function"
@@ -298,8 +279,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       });
       refreshCurrentUser();
 
-      // Citizen: points earned
-      const citizenId = currentUserRef.current?._id || currentUserRef.current?.id;
+      const citizenId = String(currentUserRef.current?._id || currentUserRef.current?.id || '');
       if (citizenId) {
         addNotification(citizenId, {
           type   : "points_earned",
@@ -309,14 +289,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         });
       }
 
-      // Department admin + generic admins channel
       notifyNewComplaint({
         id         : norm.id,
         complaintId: norm.complaintId,
         title      : norm.title,
         category   : norm.category,
         ward       : norm.ward,
-        department : norm.department,       // complaint's assigned department
+        department : norm.department,
         citizenName: norm.citizenName ?? currentUserRef.current?.name,
       });
 
@@ -326,7 +305,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [refreshCurrentUser]);
 
   /* ── UPDATE STATUS ── */
-
   const updateComplaintStatus = useCallback(async (id: string, status: string) => {
     typeof (complaintAPI as any).updateStatus === "function"
       ? await (complaintAPI as any).updateStatus(id, status)
@@ -335,8 +313,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setComplaints(prev => {
       const complaint = prev.find(c => c.id === id || c._id === id);
       if (complaint) {
-        const citizenId = complaint.citizenId?.toString?.() || complaint.citizenId;
-        if (citizenId) {
+        const citizenId = String(complaint.citizenId?._id || complaint.citizenId || '');
+        if (citizenId && citizenId !== 'undefined') {
           notifyStatusChange({
             citizenId,
             title  : complaint.title,
@@ -352,7 +330,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   /* ── DELETE ── */
-
   const deleteComplaint = useCallback(async (id: string) => {
     typeof (complaintAPI as any).delete === "function"
       ? await (complaintAPI as any).delete(id)
@@ -365,35 +342,35 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   /* ── RESOLVE ── */
-
   const resolveComplaint = useCallback(async (
-    id: string, photo?: string, note?: string, officer?: string,
+    id: string, photo?: string, note?: string, officer?: string, beforePhoto?: string,
   ) => {
     typeof (complaintAPI as any).resolve === "function"
-      ? await (complaintAPI as any).resolve(id, { resolvePhoto: photo, adminNote: note, assignedOfficer: officer })
+      ? await (complaintAPI as any).resolve(id, { resolvePhoto: photo, beforePhoto, adminNote: note, assignedOfficer: officer })
       : await apiFetch(`/complaints/${id}/resolve`, {
           method: "POST",
-          body  : JSON.stringify({ resolvePhoto: photo, adminNote: note, assignedOfficer: officer }),
+          body  : JSON.stringify({ resolvePhoto: photo, beforePhoto, adminNote: note, assignedOfficer: officer }),
         });
 
     setComplaints(prev => {
       const resolvedC = prev.find(c => c.id === id || c._id === id);
       if (resolvedC) {
-        const citizenId = resolvedC.citizenId?.toString?.() || resolvedC.citizenId;
-        if (citizenId) {
+        const citizenId = String(resolvedC.citizenId?._id || resolvedC.citizenId || '');
+        if (citizenId && citizenId !== 'undefined') {
           notifyResolved({
             citizenId,
             title      : resolvedC.title,
             trackId    : resolvedC.complaintId || id,
             officer,
             department : resolvedC.department,
+            category   : resolvedC.category,
             resolvedBy : currentUserRef.current?.name,
           });
         }
       }
       const updated = prev.map(c =>
         c.id === id || c._id === id
-          ? { ...c, status: "Resolved", resolvePhoto: photo, adminNote: note, assignedOfficer: officer }
+          ? { ...c, status: "Resolved", resolvePhoto: photo, beforePhoto, adminNote: note, assignedOfficer: officer, resolveDate: new Date().toISOString() }
           : c,
       );
       ls.set(COMPLAINTS_KEY, updated);
@@ -403,15 +380,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     refreshLeaderboard();
   }, [refreshLeaderboard]);
 
-  /* ── SEND DOCUMENT TO CITIZEN ── */
-
-  const sendDocument = useCallback((
-    citizenId: string,
-    documentName: string,
-    complaintId?: string,
-  ) => {
+  /* ── SEND DOCUMENT ── */
+  const sendDocument = useCallback((citizenId: string, documentName: string, complaintId?: string) => {
+    const cid = String(citizenId || '');
     notifyDocumentSent({
-      citizenId,
+      citizenId: cid,
       documentName,
       complaintId,
       sentBy: currentUserRef.current?.name,
@@ -419,7 +392,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   /* ── ADMIN APPROVAL ── */
-
   const getPendingAdmins = useCallback(async (): Promise<any[]> => {
     try {
       const data = await apiFetch("/auth/pending-admins");
@@ -435,8 +407,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     const adminUser = data?.user;
     if (adminUser) {
       const notifKey = adminUser._id || adminUser.id;
-
-      // Notify the admin themselves
       addNotification(notifKey, {
         type   : "status_change",
         title  : action === "approve" ? "✅ Account Approved!" : "❌ Account Rejected",
@@ -445,16 +415,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           : "Your registration was rejected. Contact the Super Admin.",
         link: "/admin/login",
       });
-
-      // Notify the department channel
-      addNotification(deptKey(adminUser.department), {
-        type   : "status_change",
-        title  : action === "approve" ? "✅ New Admin Joined" : "❌ Admin Registration Rejected",
-        message: `${adminUser.name} has been ${action === "approve" ? "approved" : "rejected"} for the ${adminUser.department} department.`,
-        link   : "/admin/settings",
-      });
-
-      // Notify superadmin
+      if (adminUser.department) {
+        addNotification(deptKey(adminUser.department), {
+          type   : "status_change",
+          title  : action === "approve" ? "✅ New Officer Joined" : "❌ Registration Rejected",
+          message: `${adminUser.name} has been ${action === "approve" ? "approved" : "rejected"} for ${adminUser.department}.`,
+          link   : "/admin/settings",
+        });
+      }
       addNotification("superadmin", {
         type   : "status_change",
         title  : action === "approve" ? "✅ Admin Approved" : "❌ Admin Rejected",
@@ -465,18 +433,18 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   /* ── DERIVED ── */
-
   const myComplaints = useMemo(() => {
     if (!currentUser) return [];
-    return complaints.filter(
-      c => c.citizenId === currentUser._id || c.citizenId === currentUser.id,
-    );
+    const list = Array.isArray(complaints) ? complaints : [];
+    const uid = String(currentUser._id || currentUser.id || '');
+    return list.filter(c => {
+      const cid = String(c.citizenId?._id || c.citizenId || '');
+      return uid && cid && uid === cid;
+    });
   }, [complaints, currentUser]);
 
-  /* ── MEMOIZED CONTEXT VALUE ── */
-
   const value = useMemo<AppContextType>(() => ({
-    currentUser, complaints, users, loading,
+    currentUser, complaints: Array.isArray(complaints) ? complaints : [], users, loading,
     login, register, logout,
     refreshComplaints, refreshCurrentUser, myComplaints,
     addComplaint, updateComplaintStatus, deleteComplaint, resolveComplaint,
@@ -493,9 +461,5 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     getPendingAdmins, approveAdmin,
   ]);
 
-  return (
-    <AppContext.Provider value={value}>
-      {children}
-    </AppContext.Provider>
-  );
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 };

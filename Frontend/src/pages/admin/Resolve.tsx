@@ -12,7 +12,6 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
-import { emailAPI } from '@/lib/api';
 import {
   Camera, CheckCircle, MapPin, Mail,
   ChevronDown, ChevronUp, Clock, Star,
@@ -21,7 +20,7 @@ import {
 import { getPriorityClass, getStatusClass } from '@/types';
 
 export default function AdminResolve() {
-  const { complaints, resolveComplaint, deleteComplaint, currentUser, refreshComplaints } = useApp();
+  const { complaints, resolveComplaint, deleteComplaint, currentUser, refreshComplaints, sendDocument } = useApp() as any;
   const { toast } = useToast();
 
   const isOfficer    = currentUser?.role === 'dept_officer' || currentUser?.role === 'admin';
@@ -37,8 +36,9 @@ export default function AdminResolve() {
 
   const [selectedId,   setSelectedId]   = useState<string | null>(null);
   const [search,       setSearch]       = useState('');
-  const [resolvePhoto, setResolvePhoto] = useState('');
-  const [note,         setNote]         = useState('');
+  const [resolvePhoto,  setResolvePhoto]  = useState('');
+  const [beforePhoto,   setBeforePhoto]   = useState('');
+  const [note,          setNote]          = useState('');
   const [officer,      setOfficer]      = useState(currentUser?.name || '');
   const [confirming,   setConfirming]   = useState(false);
   const [submitting,   setSubmitting]   = useState(false);
@@ -71,11 +71,21 @@ export default function AdminResolve() {
     }
   };
 
+  const handleBeforePhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = () => setBeforePhoto(reader.result as string);
+      reader.readAsDataURL(file);
+    }
+  };
+
   const handleSelect = (id: string) => {
     setSelectedId(id);
     setConfirming(false);
     setSubmitting(false);
     setResolvePhoto('');
+    setBeforePhoto('');
     setNote('');
     const c = complaints.find(x => x.id === id);
     setOfficer(c?.assignedOfficer || currentUser?.name || '');
@@ -89,10 +99,19 @@ export default function AdminResolve() {
     }
     setSubmitting(true);
     try {
-      await resolveComplaint(selectedId, resolvePhoto, note, officer);
+      await resolveComplaint(selectedId, resolvePhoto, note, officer, beforePhoto);
       if (refreshComplaints) await refreshComplaints();
       toast({ title: '✅ Complaint resolved!', description: `${selectedId} marked as Resolved. Citizen awarded +100 pts.` });
-      setSelectedId(null); setResolvePhoto(''); setNote('');
+      // Send document notification to citizen
+      const resolved = complaints.find(c => c.id === selectedId);
+      if (resolved?.citizenId && sendDocument) {
+        sendDocument(
+          String(resolved.citizenId?._id || resolved.citizenId),
+          `Resolution Certificate — ${resolved.title}`,
+          resolved.complaintId || selectedId,
+        );
+      }
+      setSelectedId(null); setResolvePhoto(''); setBeforePhoto(''); setNote('');
       setOfficer(currentUser?.name || ''); setConfirming(false);
     } catch (err: any) {
       const msg = err?.message || 'Unknown error';
@@ -117,17 +136,28 @@ export default function AdminResolve() {
     }
   };
 
-  const sendAck = async (c: any) => {
-    setAckLoading(prev => new Set([...prev, c.id]));
-    try {
-      await emailAPI.sendResolutionEmail(c);
-      setAckSent(prev => new Set([...prev, c.id]));
-      toast({ title: '📧 Resolution document sent', description: `Sent to ${c.citizenName}` });
-    } catch {
-      toast({ title: '❌ Email failed', description: 'Could not send acknowledgement.', variant: 'destructive' });
-    } finally {
-      setAckLoading(prev => { const s = new Set(prev); s.delete(c.id); return s; });
+  const sendAck = (c: any) => {
+    // Send in-app notification to citizen
+    const cid = String(c.citizenId?._id || c.citizenId || '');
+    if (cid && sendDocument) {
+      sendDocument(cid, `Resolution Certificate — ${c.title}`, c.complaintId || c.id);
     }
+    setAckSent(prev => new Set([...prev, c.id]));
+
+    // Fallback: open mailto in new tab (no backend email endpoint needed)
+    if (c.citizenEmail) {
+      const subject = encodeURIComponent(`JANVANI – Complaint ${c.complaintId || c.id} Resolved`);
+      const body = encodeURIComponent(
+        `Dear ${c.citizenName},\n\n` +
+        `Your complaint "${c.title}" (ID: ${c.complaintId || c.id}) has been resolved.\n\n` +
+        `Resolution Note: ${c.adminNote || 'Issue addressed by the municipal team.'}\n` +
+        `Officer: ${c.assignedOfficer || 'Municipal Officer'}\n\n` +
+        `Thank you for using JANVANI.\nMunicipal Corporation`
+      );
+      window.open(`mailto:${c.citizenEmail}?subject=${subject}&body=${body}`);
+    }
+
+    toast({ title: '📄 Document sent', description: `In-app notification sent to ${c.citizenName}` });
   };
 
   const toggleExpand = (id: string) => {
@@ -254,14 +284,26 @@ export default function AdminResolve() {
                       <hr className="border-border" />
                       <h3 className="font-heading font-semibold">Resolution Details</h3>
 
-                      <div>
-                        <Label>Upload Resolution Photo</Label>
-                        <label className="mt-2 border-2 border-dashed border-border rounded-lg p-6 flex flex-col items-center cursor-pointer hover:border-accent transition-colors">
-                          {resolvePhoto
-                            ? <img src={resolvePhoto} className="max-h-32 rounded-lg object-cover" alt="Preview" />
-                            : <><Camera className="h-8 w-8 text-muted-foreground mb-2" /><span className="text-sm text-muted-foreground">Click to upload photo proof</span></>}
-                          <input type="file" accept="image/*" className="hidden" onChange={handlePhoto} />
-                        </label>
+                      {/* Before / After Photos */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <Label className="text-xs text-muted-foreground">📷 Before Photo <span className="opacity-60">(optional)</span></Label>
+                          <label className="mt-1 border-2 border-dashed border-border rounded-lg p-4 flex flex-col items-center cursor-pointer hover:border-warning transition-colors">
+                            {beforePhoto
+                              ? <img src={beforePhoto} className="max-h-28 rounded-lg object-cover" alt="Before" />
+                              : <><Camera className="h-6 w-6 text-muted-foreground mb-1" /><span className="text-xs text-muted-foreground">Before photo</span></>}
+                            <input type="file" accept="image/*" className="hidden" onChange={handleBeforePhoto} />
+                          </label>
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">✅ After Photo (Proof) *</Label>
+                          <label className="mt-1 border-2 border-dashed border-border rounded-lg p-4 flex flex-col items-center cursor-pointer hover:border-accent transition-colors">
+                            {resolvePhoto
+                              ? <img src={resolvePhoto} className="max-h-28 rounded-lg object-cover" alt="After" />
+                              : <><Camera className="h-6 w-6 text-muted-foreground mb-1" /><span className="text-xs text-muted-foreground">After / proof photo</span></>}
+                            <input type="file" accept="image/*" className="hidden" onChange={handlePhoto} />
+                          </label>
+                        </div>
                       </div>
 
                       <div>

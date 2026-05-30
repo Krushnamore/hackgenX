@@ -1,39 +1,26 @@
 /**
- * AppHeader.tsx  —  Universal header for Admin + Citizen layouts
- *
- * 🔔 Bell icon:
- *   - Admin/SuperAdmin: sees "new complaint filed" notifications (shared "admins" key)
- *   - Citizen: sees "resolved", "status change", "points earned", "badge" notifications
- *
- * 👤 Profile avatar (click to open profile panel):
- *   - Admin: shows name, role, department, quick links
- *   - Citizen: shows name, points, badge, rewards link
- *   - All roles: Settings + Logout
- *
- * USAGE in AdminLayout:
- *   import AppHeader from '@/components/AppHeader';
- *   <AppHeader title="Municipal Admin Portal" />
- *
- * USAGE in CitizenLayout:
- *   <AppHeader title="JANVANI Citizen Portal" />
+ * AppHeader.tsx — Universal header: Bell + Profile
+ * Notification keys by role:
+ *   superAdmin   → 'superadmin'
+ *   dept_officer → deptKey(department)  (also sees 'admins' channel merged)
+ *   admin        → 'admins'
+ *   citizen      → their userId
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  Bell, CheckCheck, Trash2, X,
-  LogOut, Settings, ChevronRight, Trophy
-} from 'lucide-react';
+import { Bell, CheckCheck, Trash2, X, LogOut, Settings, ChevronRight, Trophy } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
-import { useNotifications } from '@/hooks/useNotifications';
+import { useNotifications, deptKey } from '@/hooks/useNotifications';
 
-// ── Helpers ───────────────────────────────────────────────────
 const TYPE_ICON: Record<string, string> = {
   new_complaint : '📋',
   status_change : '🔄',
   resolved      : '✅',
   points_earned : '🏆',
   badge_unlocked: '🎖️',
+  document_sent : '📄',
+  admin_pending : '⏳',
 };
 
 const TYPE_BG: Record<string, string> = {
@@ -42,6 +29,8 @@ const TYPE_BG: Record<string, string> = {
   resolved      : 'bg-green-50 border-green-200',
   points_earned : 'bg-purple-50 border-purple-200',
   badge_unlocked: 'bg-amber-50 border-amber-200',
+  document_sent : 'bg-teal-50 border-teal-200',
+  admin_pending : 'bg-orange-50 border-orange-200',
 };
 
 function timeAgo(ts: number): string {
@@ -67,28 +56,58 @@ const BADGE_COLOR: Record<string, string> = {
 
 const ADMIN_ROLES = ['superAdmin', 'dept_officer', 'admin'];
 
-// ── Component ─────────────────────────────────────────────────
 interface Props { title?: string; }
 
 export default function AppHeader({ title = 'JANVANI' }: Props) {
   const { currentUser, logout } = useApp();
   const navigate = useNavigate();
 
-  const isAdmin = ADMIN_ROLES.includes(currentUser?.role);
+  const isAdmin      = ADMIN_ROLES.includes(currentUser?.role);
+  const isSuperAdmin = currentUser?.role === 'superAdmin';
+  const isOfficer    = currentUser?.role === 'dept_officer' || currentUser?.role === 'admin';
 
-  // Admin uses shared "admins" key; citizen uses their own ID
-  const notifKey = isAdmin
-    ? 'admins'
-    : (currentUser?._id || currentUser?.id);
+  // Primary notif key per role
+  const primaryKey = useMemo(() => {
+    if (!currentUser) return undefined;
+    if (isSuperAdmin) return 'superadmin';
+    if (isOfficer && currentUser.department) return deptKey(currentUser.department);
+    if (isAdmin)  return 'admins';
+    // Citizen — must be a plain string matching what addNotification uses
+    const uid = String(currentUser._id || currentUser.id || '');
+    return uid || undefined;
+  }, [currentUser, isSuperAdmin, isOfficer, isAdmin]);
 
-  const { notifs, unread, markRead, clear } = useNotifications(notifKey);
+  // Officers also get the shared 'admins' channel merged in
+  const secondaryKey = isOfficer ? 'admins' : undefined;
+
+  const primary   = useNotifications(primaryKey);
+  const secondary = useNotifications(secondaryKey);
+
+  // Merge both channels, sorted by timestamp, deduplicated by id
+  const allNotifs = useMemo(() => {
+    const merged = [...primary.notifs, ...secondary.notifs];
+    const seen   = new Set<string>();
+    return merged
+      .filter(n => { if (seen.has(n.id)) return false; seen.add(n.id); return true; })
+      .sort((a, b) => b.timestamp - a.timestamp);
+  }, [primary.notifs, secondary.notifs]);
+
+  const unread = allNotifs.filter(n => !n.read).length;
+
+  const handleMarkRead = () => {
+    primary.markRead();
+    secondary.markRead();
+  };
+  const handleClear = () => {
+    primary.clear();
+    secondary.clear();
+  };
 
   const [bellOpen,    setBellOpen]    = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const bellRef    = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
 
-  // Close panels on outside click
   useEffect(() => {
     const fn = (e: MouseEvent) => {
       if (bellRef.current    && !bellRef.current.contains(e.target as Node))    setBellOpen(false);
@@ -101,7 +120,7 @@ export default function AppHeader({ title = 'JANVANI' }: Props) {
   const toggleBell = () => {
     setBellOpen(v => !v);
     setProfileOpen(false);
-    if (!bellOpen && unread > 0) markRead();
+    if (!bellOpen && unread > 0) handleMarkRead();
   };
 
   const toggleProfile = () => {
@@ -124,28 +143,27 @@ export default function AppHeader({ title = 'JANVANI' }: Props) {
     setProfileOpen(false);
   };
 
+
+
   if (!currentUser) return null;
 
-  const roleLabel = currentUser.role === 'superAdmin'   ? 'Super Admin'
-    : currentUser.role === 'dept_officer' ? `Officer · ${currentUser.department || ''}`
-    : currentUser.role === 'admin'        ? `Admin · ${currentUser.department || ''}`
+  const roleLabel =
+    isSuperAdmin  ? 'Super Admin'
+    : isOfficer   ? `Officer · ${currentUser.department || ''}`
+    : currentUser.role === 'admin' ? `Admin · ${currentUser.department || ''}`
     : `Citizen · Ward ${currentUser.ward || 1}`;
 
   return (
     <header className="h-14 border-b border-border bg-card flex items-center justify-between px-4 flex-shrink-0 z-30">
-      {/* Title */}
       <p className="text-sm font-medium text-muted-foreground hidden sm:block">{title}</p>
 
-      {/* Right controls */}
       <div className="flex items-center gap-2 ml-auto">
 
-        {/* ── Bell ─────────────────────────────────────────── */}
+        {/* ── Bell ── */}
         <div className="relative" ref={bellRef}>
-          <button
-            onClick={toggleBell}
+          <button onClick={toggleBell}
             className="relative h-9 w-9 flex items-center justify-center rounded-full hover:bg-muted transition-colors"
-            aria-label="Notifications"
-          >
+            aria-label="Notifications">
             <Bell className="h-5 w-5 text-muted-foreground" />
             {unread > 0 && (
               <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-red-500 text-[10px] font-bold text-white flex items-center justify-center">
@@ -156,7 +174,6 @@ export default function AppHeader({ title = 'JANVANI' }: Props) {
 
           {bellOpen && (
             <div className="absolute right-0 top-11 w-80 bg-card border border-border rounded-xl shadow-2xl z-50 overflow-hidden">
-              {/* Header */}
               <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
                 <div className="flex items-center gap-2">
                   <Bell className="h-4 w-4" />
@@ -168,41 +185,38 @@ export default function AppHeader({ title = 'JANVANI' }: Props) {
                   )}
                 </div>
                 <div className="flex items-center gap-1">
-                  {notifs.length > 0 && (
+                  {allNotifs.length > 0 && (
                     <>
-                      <button onClick={markRead} title="Mark all read" className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-muted">
+                      <button onClick={handleMarkRead} title="Mark all read"
+                        className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-muted">
                         <CheckCheck className="h-3.5 w-3.5 text-muted-foreground" />
                       </button>
-                      <button onClick={clear} title="Clear all" className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-muted">
+                      <button onClick={handleClear} title="Clear all"
+                        className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-muted">
                         <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
                       </button>
                     </>
                   )}
-                  <button onClick={() => setBellOpen(false)} className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-muted">
+                  <button onClick={() => setBellOpen(false)}
+                    className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-muted">
                     <X className="h-3.5 w-3.5 text-muted-foreground" />
                   </button>
                 </div>
               </div>
 
-              {/* List */}
               <div className="max-h-96 overflow-y-auto divide-y divide-border/50">
-                {notifs.length === 0 ? (
+                {allNotifs.length === 0 ? (
                   <div className="py-12 text-center text-muted-foreground">
                     <Bell className="h-8 w-8 mx-auto mb-2 opacity-20" />
                     <p className="text-sm font-medium">No notifications yet</p>
                     <p className="text-xs mt-1 opacity-60">
-                      {isAdmin
-                        ? 'New complaint alerts will appear here'
-                        : 'Complaint updates & rewards appear here'}
+                      {isAdmin ? 'New complaint alerts will appear here' : 'Complaint updates & rewards appear here'}
                     </p>
                   </div>
                 ) : (
-                  notifs.map(n => (
-                    <button
-                      key={n.id}
-                      onClick={() => handleNotifClick(n)}
-                      className={`w-full text-left px-4 py-3 hover:bg-muted/40 transition-colors flex gap-3 items-start ${!n.read ? 'bg-accent/5' : ''}`}
-                    >
+                  allNotifs.map(n => (
+                    <button key={n.id} onClick={() => handleNotifClick(n)}
+                      className={`w-full text-left px-4 py-3 hover:bg-muted/40 transition-colors flex gap-3 items-start ${!n.read ? 'bg-accent/5' : ''}`}>
                       <span className={`flex-shrink-0 h-8 w-8 rounded-full border flex items-center justify-center text-sm ${TYPE_BG[n.type] || 'bg-muted border-border'}`}>
                         {TYPE_ICON[n.type] || '🔔'}
                       </span>
@@ -221,10 +235,10 @@ export default function AppHeader({ title = 'JANVANI' }: Props) {
                 )}
               </div>
 
-              {notifs.length > 0 && (
+              {allNotifs.length > 0 && (
                 <div className="px-4 py-2 border-t border-border bg-muted/20 text-center">
                   <p className="text-[10px] text-muted-foreground">
-                    {notifs.length} notification{notifs.length !== 1 ? 's' : ''}
+                    {allNotifs.length} notification{allNotifs.length !== 1 ? 's' : ''}
                   </p>
                 </div>
               )}
@@ -232,13 +246,11 @@ export default function AppHeader({ title = 'JANVANI' }: Props) {
           )}
         </div>
 
-        {/* ── Avatar / Profile ──────────────────────────────── */}
+        {/* ── Avatar / Profile ── */}
         <div className="relative" ref={profileRef}>
-          <button
-            onClick={toggleProfile}
+          <button onClick={toggleProfile}
             className="h-9 w-9 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold hover:opacity-90 transition-opacity overflow-hidden ring-2 ring-transparent hover:ring-primary/30"
-            aria-label="Profile"
-          >
+            aria-label="Profile">
             {currentUser.avatar
               ? <img src={currentUser.avatar} className="w-full h-full object-cover" alt={currentUser.name} />
               : initials(currentUser.name || 'U')}
@@ -246,10 +258,8 @@ export default function AppHeader({ title = 'JANVANI' }: Props) {
 
           {profileOpen && (
             <div className="absolute right-0 top-11 w-72 bg-card border border-border rounded-xl shadow-2xl z-50 overflow-hidden">
-              {/* Profile card */}
               <div className="p-4 border-b border-border bg-gradient-to-br from-primary/5 to-transparent">
                 <div className="flex items-center gap-3">
-                  {/* Big avatar */}
                   <div className="h-12 w-12 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-lg font-bold flex-shrink-0 overflow-hidden">
                     {currentUser.avatar
                       ? <img src={currentUser.avatar} className="w-full h-full object-cover" alt={currentUser.name} />
@@ -264,7 +274,6 @@ export default function AppHeader({ title = 'JANVANI' }: Props) {
                   </div>
                 </div>
 
-                {/* Citizen stats */}
                 {!isAdmin && (
                   <div className="mt-3 grid grid-cols-3 gap-2 text-center">
                     <div className="bg-background rounded-lg p-2">
@@ -273,7 +282,7 @@ export default function AppHeader({ title = 'JANVANI' }: Props) {
                     </div>
                     <div className="bg-background rounded-lg p-2">
                       <p className="text-sm font-bold">{currentUser.complaintsSubmitted || 0}</p>
-                      <p className="text-[10px] text-muted-foreground">Complaints</p>
+                      <p className="text-[10px] text-muted-foreground">Reports</p>
                     </div>
                     <div className="bg-background rounded-lg p-2">
                       <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${BADGE_COLOR[currentUser.badge || 'Bronze'] || BADGE_COLOR.Bronze}`}>
@@ -284,32 +293,31 @@ export default function AppHeader({ title = 'JANVANI' }: Props) {
                   </div>
                 )}
 
-                {/* Admin department pill */}
                 {isAdmin && currentUser.department && (
                   <div className="mt-2">
-                    <span className="text-[11px] bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 px-2 py-0.5 rounded-full font-medium">
+                    <span className="text-[11px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">
                       🏢 {currentUser.department}
                     </span>
+                    {isSuperAdmin && (
+                      <span className="ml-2 text-[11px] bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">
+                        👑 Super Admin
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
 
-              {/* Menu actions */}
               <div className="p-2 space-y-0.5">
-                <button
-                  onClick={handleSettings}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-muted transition-colors text-sm"
-                >
+                <button onClick={handleSettings}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-muted transition-colors text-sm">
                   <Settings className="h-4 w-4 text-muted-foreground" />
                   <span>Settings &amp; Profile</span>
                   <ChevronRight className="h-3.5 w-3.5 text-muted-foreground ml-auto" />
                 </button>
 
                 {!isAdmin && (
-                  <button
-                    onClick={() => { navigate('/citizen/rewards'); setProfileOpen(false); }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-muted transition-colors text-sm"
-                  >
+                  <button onClick={() => { navigate('/citizen/rewards'); setProfileOpen(false); }}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-muted transition-colors text-sm">
                     <Trophy className="h-4 w-4 text-yellow-500" />
                     <span>My Rewards</span>
                     <ChevronRight className="h-3.5 w-3.5 text-muted-foreground ml-auto" />
@@ -318,10 +326,8 @@ export default function AppHeader({ title = 'JANVANI' }: Props) {
 
                 <div className="my-1 border-t border-border" />
 
-                <button
-                  onClick={handleLogout}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 transition-colors text-sm"
-                >
+                <button onClick={handleLogout}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-red-50 text-red-600 transition-colors text-sm">
                   <LogOut className="h-4 w-4" />
                   <span>Logout</span>
                 </button>
@@ -329,7 +335,6 @@ export default function AppHeader({ title = 'JANVANI' }: Props) {
             </div>
           )}
         </div>
-
       </div>
     </header>
   );

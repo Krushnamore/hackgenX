@@ -212,7 +212,7 @@ router.post('/:id/resolve', protect, async (req, res) => {
     if (!adminRoles.includes(req.user.role))
       return res.status(403).json({ success: false, message: 'Admin access required' });
 
-    const { resolvePhoto, adminNote, assignedOfficer } = req.body;
+    const { resolvePhoto, beforePhoto, adminNote, assignedOfficer } = req.body;
 
     const complaint = await Complaint.findOne({
       $or: [{ _id: req.params.id }, { complaintId: req.params.id }],
@@ -226,12 +226,19 @@ router.post('/:id/resolve', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Cannot resolve complaints outside your department' });
 
     complaint.status         = 'Resolved';
-    complaint.resolvePhoto   = resolvePhoto || '';
-    complaint.adminNote      = adminNote    || complaint.adminNote;
-    complaint.assignedOfficer= assignedOfficer || req.user.name;
+    complaint.resolvePhoto    = resolvePhoto  || '';
+    complaint.beforePhoto     = beforePhoto   || '';
+    complaint.adminNote       = adminNote     || complaint.adminNote;
+    complaint.assignedOfficer = assignedOfficer || req.user.name;
+    complaint.resolveDate     = new Date();
 
     const today = new Date().toISOString().split('T')[0];
-    complaint.timeline = complaint.timeline.map(step => ({ ...step, done: true, date: step.date || today }));
+    // FIX: safely convert Mongoose subdoc before spreading, then markModified so it saves
+    complaint.timeline = complaint.timeline.map(step => {
+      const s = typeof step.toObject === 'function' ? step.toObject() : { ...step };
+      return { ...s, done: true, date: s.date || today };
+    });
+    complaint.markModified('timeline');
 
     await complaint.save();
 
@@ -256,11 +263,12 @@ router.post('/:id/resolve', protect, async (req, res) => {
 });
 
 // ── DELETE /api/complaints/:id ────────────────────────────────
-// Only superAdmin can delete
+// superAdmin, dept_officer and admin can delete
 router.delete('/:id', protect, async (req, res) => {
   try {
-    if (req.user.role !== 'superAdmin')
-      return res.status(403).json({ success: false, message: 'Only Super Admin can delete complaints' });
+    const allowedRoles = ['superAdmin', 'dept_officer', 'admin'];
+    if (!allowedRoles.includes(req.user.role))
+      return res.status(403).json({ success: false, message: 'Admin access required to delete complaints' });
 
     const complaint = await Complaint.findOneAndDelete({
       $or: [{ _id: req.params.id }, { complaintId: req.params.id }],
