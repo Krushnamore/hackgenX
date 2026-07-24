@@ -12,21 +12,43 @@ import { CATEGORIES, type Category, type Priority } from '@/types';
 
 // ─── Groq API Key — loaded from .env (NEVER hardcode secrets here) ────────────
 const GROQ_API_KEY      = import.meta.env.VITE_GROQ_API_KEY as string;
-const GROQ_VISION_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct'; // vision capable
-const GROQ_TEXT_MODEL   = 'llama3-70b-8192';
+// Current (as of mid-2026) Groq models. Groq deprecates models on short notice —
+// if these ever 404, check https://console.groq.com/docs/models for replacements.
+const GROQ_VISION_MODEL = 'qwen/qwen3.6-27b';    // vision-capable, PREVIEW model
+const GROQ_TEXT_MODEL   = 'openai/gpt-oss-120b'; // production text model
 
 // ─── Call Groq chat completions ────────────────────────────────────────────────
 async function groqChat(
   messages: Array<{ role: string; content: any }>,
   model = GROQ_TEXT_MODEL,
+  opts: { json?: boolean } = {},
 ): Promise<string> {
+  const body: Record<string, any> = {
+    model,
+    messages,
+    temperature: 0.3,
+    max_tokens: 1024,
+  };
+
+  // Qwen3.6 is a reasoning model — it prepends <think>...</think> blocks unless
+  // told otherwise. Disable reasoning entirely for structured JSON extraction
+  // tasks so we get a clean response we can parse directly.
+  if (model.startsWith('qwen/')) {
+    body.reasoning_effort = 'none';
+  }
+  // gpt-oss models use a different reasoning control; keep it light since we
+  // just want fast, deterministic JSON back, not deep reasoning.
+  if (model.startsWith('openai/gpt-oss')) {
+    body.reasoning_effort = 'low';
+  }
+
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method : 'POST',
     headers : {
       'Content-Type'  : 'application/json',
       'Authorization' : `Bearer ${GROQ_API_KEY}`,
     },
-    body: JSON.stringify({ model, messages, temperature: 0.3, max_tokens: 1024 }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -34,6 +56,16 @@ async function groqChat(
   }
   const data = await res.json();
   return data.choices?.[0]?.message?.content?.trim() || '';
+}
+
+// ─── Robustly pull a JSON object out of a model response ──────────────────────
+// Handles: markdown code fences, stray <think>...</think> reasoning blocks that
+// slip through even with reasoning disabled, and any leading/trailing prose.
+function extractJson(raw: string): string {
+  let cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  cleaned = cleaned.replace(/```json|```/g, '').trim();
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  return match ? match[0] : cleaned;
 }
 
 // ─── Validate + analyse uploaded image via Groq vision ────────────────────────
@@ -59,7 +91,7 @@ Your job is to:
 2. If the image is NOT related to a civic issue (e.g. selfie, random object, food, nature scene unrelated to civic problems), mark it invalid.
 3. If valid, extract structured information about the issue.
 
-Respond ONLY with a valid JSON object — no markdown, no explanation outside the JSON.
+Respond ONLY with a valid JSON object — no markdown, no explanation outside the JSON, no reasoning, no <think> tags.
 
 JSON schema:
 {
@@ -86,11 +118,20 @@ JSON schema:
     ],
   };
 
-  const raw = await groqChat([{ role: 'system', content: systemPrompt }, userMessage], GROQ_VISION_MODEL);
+  const raw = await groqChat(
+    [{ role: 'system', content: systemPrompt }, userMessage],
+    GROQ_VISION_MODEL,
+    { json: true },
+  );
 
-  // Parse — strip possible markdown code fences
-  const clean = raw.replace(/```json|```/g, '').trim();
-  const parsed: ImageAnalysis = JSON.parse(clean);
+  const clean = extractJson(raw);
+  let parsed: ImageAnalysis;
+  try {
+    parsed = JSON.parse(clean);
+  } catch (e) {
+    console.error('Failed to parse Groq vision JSON. Raw response was:', raw);
+    throw new Error('AI returned an unexpected response format. Please try again.');
+  }
   return parsed;
 }
 
@@ -102,7 +143,7 @@ async function generateDescriptionWithGroq(
 ): Promise<{ title: string; description: string; priority: Priority; estimated: string }> {
   const systemPrompt = `You are an AI assistant for JANVANI civic complaint system in Nashik, India.
 Generate a professional complaint entry based on the given context.
-Respond ONLY with valid JSON — no markdown, no extra text.
+Respond ONLY with valid JSON — no markdown, no extra text, no reasoning, no <think> tags.
 
 JSON schema:
 {
@@ -116,9 +157,16 @@ JSON schema:
   const raw     = await groqChat(
     [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }],
     GROQ_TEXT_MODEL,
+    { json: true },
   );
-  const clean  = raw.replace(/```json|```/g, '').trim();
-  const parsed = JSON.parse(clean);
+  const clean = extractJson(raw);
+  let parsed: any;
+  try {
+    parsed = JSON.parse(clean);
+  } catch (e) {
+    console.error('Failed to parse Groq text JSON. Raw response was:', raw);
+    throw new Error('AI returned an unexpected response format. Please try again.');
+  }
 
   const d = new Date();
   d.setDate(d.getDate() + (parsed.daysToResolve || 14));
@@ -276,7 +324,7 @@ export default function CitizenReport() {
   const [location, setLocation]   = useState('');
   const [gps, setGps]             = useState({ lat: 20.0059, lng: 73.7897 });
   const [locating, setLocating]   = useState(false);
-  // ── NEW: controls whether the Leaflet map is visible ──
+  // ── controls whether the Leaflet map is visible ──
   const [showMap, setShowMap]     = useState(false);
   const [category, setCategory]   = useState<Category>('Road');
   const [analyzing, setAnalyzing] = useState(false);
@@ -572,7 +620,7 @@ export default function CitizenReport() {
         {/* ── STEP 1: Capture ── */}
         {step === 1 && (
           <div className="space-y-5 animate-fade-in">
-            {/* Photo upload — UNCHANGED */}
+            {/* Photo upload */}
             <div>
               <Label>Photo Evidence</Label>
               <label
@@ -635,9 +683,8 @@ export default function CitizenReport() {
               </label>
             </div>
 
-            {/* ── LOCATION SECTION — only part changed ── */}
+            {/* ── LOCATION SECTION ── */}
             <div className="space-y-2">
-              {/* Two buttons: GPS (original) + new Pick on Map toggle */}
               <div className="flex gap-2 flex-wrap">
                 <Button type="button" variant="outline" onClick={detectLocation} disabled={locating}>
                   {locating ? (
@@ -657,14 +704,12 @@ export default function CitizenReport() {
                 </Button>
               </div>
 
-              {/* Location string display — same as original */}
               {location && (
                 <p className="text-sm text-success bg-success/10 rounded-lg px-3 py-2">
                   📍 {location}
                 </p>
               )}
 
-              {/* Leaflet map — shown only when toggled or after GPS */}
               {showMap && (
                 <div className="animate-fade-in">
                   <LeafletMap
@@ -680,7 +725,7 @@ export default function CitizenReport() {
             </div>
             {/* ── END LOCATION SECTION ── */}
 
-            {/* Category — UNCHANGED */}
+            {/* Category */}
             <div>
               <Label>
                 Category
@@ -716,7 +761,7 @@ export default function CitizenReport() {
               </div>
             </div>
 
-            {/* Invalid image warning — UNCHANGED */}
+            {/* Invalid image warning */}
             {imageValid === false && (
               <div className="flex items-start gap-2 bg-warning/10 border border-warning/30 rounded-lg p-3">
                 <AlertTriangle className="h-4 w-4 text-warning flex-shrink-0 mt-0.5" />
@@ -744,7 +789,7 @@ export default function CitizenReport() {
           </div>
         )}
 
-        {/* ── STEP 2: AI Description — UNCHANGED ── */}
+        {/* ── STEP 2: AI Description ── */}
         {step === 2 && (
           <div className="space-y-5 animate-fade-in">
             {analyzing ? (
@@ -839,7 +884,7 @@ export default function CitizenReport() {
           </div>
         )}
 
-        {/* ── STEP 3: Review & Submit — UNCHANGED ── */}
+        {/* ── STEP 3: Review & Submit ── */}
         {step === 3 && (
           <div className="space-y-5 animate-fade-in">
             <div className="card-elevated p-6 space-y-3">
@@ -869,7 +914,6 @@ export default function CitizenReport() {
               <p className="text-xs text-muted-foreground">Est. resolution: {estimated}</p>
             </div>
 
-            {/* Notice — UNCHANGED */}
             <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3 flex gap-2 items-start">
               <span className="text-blue-500 text-sm">ℹ️</span>
               <p className="text-xs text-blue-700 dark:text-blue-300">
