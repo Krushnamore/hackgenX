@@ -373,10 +373,19 @@ export default function CitizenReport() {
           toast({ title: '✅ Image verified — civic issue detected' });
         }
       } catch (err: any) {
-        // Don't block the user if AI fails — just warn
+        // AI verification failed (e.g. API error) — do NOT allow the user to
+        // proceed. Treat this the same as an invalid image and keep them on
+        // Step 1 so they can retry the upload.
         console.error('Groq vision error:', err);
-        setImageValid(true); // allow proceeding
-        toast({ title: '⚠️ AI validation unavailable', description: 'Proceeding without image check.' });
+        setImageValid(false);
+        setImageInvalidReason(
+          'AI verification failed. Please check your connection and try uploading again.',
+        );
+        toast({
+          title       : '❌ AI verification failed',
+          description : 'Could not verify the image. Please try again.',
+          variant     : 'destructive',
+        });
       } finally {
         setImageValidating(false);
       }
@@ -582,10 +591,10 @@ export default function CitizenReport() {
   };
 
   // ── Helpers ───────────────────────────────────────────────────────────────
-  const canProceed =
-    !imageValidating &&
-    (imageValid === true || imageValid === null) &&
-    imageInvalidReason === '';
+  // Continue is only allowed once the AI has explicitly confirmed the image
+  // is valid. imageValid === null (no photo yet) or === false (invalid /
+  // AI verification failed) both keep the user on Step 1.
+  const canProceed = !imageValidating && imageValid === true;
 
   return (
     <CitizenLayout>
@@ -766,8 +775,8 @@ export default function CitizenReport() {
               <div className="flex items-start gap-2 bg-warning/10 border border-warning/30 rounded-lg p-3">
                 <AlertTriangle className="h-4 w-4 text-warning flex-shrink-0 mt-0.5" />
                 <p className="text-sm text-warning-foreground">
-                  The uploaded image was not recognised as a civic issue. Please upload a relevant
-                  photo or proceed without one (AI will generate a description from context).
+                  The uploaded image was not recognised as a civic issue, or AI verification
+                  failed. Please upload a valid civic-issue photo to continue.
                 </p>
               </div>
             )}
@@ -776,7 +785,7 @@ export default function CitizenReport() {
               variant="hero"
               className="w-full"
               onClick={goStep2}
-              disabled={imageValidating}
+              disabled={!canProceed}
             >
               {imageValidating ? (
                 <>
